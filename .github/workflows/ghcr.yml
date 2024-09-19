@@ -1,0 +1,26 @@
+name: "Build"
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-docker:
+    name: "Build Docker"
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        name: Check out code
+      - uses: mr-smithers-excellent/docker-build-push@v6
+        name: Build & push Docker image
+        with:
+          image: email_router
+          tags: latest
+          addLatest: true
+          registry: ghcr.io
+          dockerfile: build/Dockerfile
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}

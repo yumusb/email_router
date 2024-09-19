@@ -1,0 +1,27 @@
+services:
+  acme:
+    image: neilpang/acme.sh
+    volumes:
+      - ./cert:/cert/
+      - ./acme.sh:/acme.sh
+      - ./acme.sh-docker.sh:/acme.sh-docker.sh:ro
+    entrypoint: 
+    restart: always
+    environment:
+      - CF_Token=${CF_Token}
+      - CF_Zone_ID=${CF_Zone_ID}
+      - DNS_API=${DNS_API}
+      - ACME_SH_EMAIL=${ACME_SH_EMAIL}
+      - DOMAIN=${MXDOMAIN}
+    command: sh ./acme.sh-docker.sh
+  backend:
+    image: ghcr.io/yumusb/email_router:latest
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./cert:/cert/
+    restart: always
+    ports:
+      - "25:25"
+      - "587:587"
+    depends_on:
+      - acme

@@ -1,0 +1,11 @@
+telegram:
+  bot_token: ""
+  chat_id: ""
+smtp:
+  listen_address: "0.0.0.0:25"
+  listen_address_tls: "0.0.0.0:587"
+  allowed_domains:
+    - "domain.local"
+  cert_file: "/cert/fullchain.pem"
+  key_file: "/cert/key.pem"
+  private_email: "root@local"
