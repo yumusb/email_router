@@ -14,6 +14,12 @@ services:
       - ACME_SH_EMAIL=${ACME_SH_EMAIL}
       - DOMAIN=${MXDOMAIN}
     command: sh ./acme.sh-docker.sh
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -f /cert/cert.pem ] && openssl x509 -checkend 86400 -noout -in /cert/cert.pem"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   backend:
     image: ghcr.io/yumusb/email_router:latest
     volumes:
@@ -24,4 +30,5 @@ services:
       - "25:25"
       - "587:587"
     depends_on:
-      - acme
+      acme:
+        condition: service_healthy
