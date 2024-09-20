@@ -36,7 +36,7 @@ mx1.404.local.	1	IN	A	223.223.223.223
 403.local.	1	IN	MX	5 mx1.404.local.
 
 ;; TXT Records
-404.local.	1	IN	TXT	"v=spf1 include:404.local -all"
+403.local.	1	IN	TXT	"v=spf1 include:404.local -all"
 ```
 （不一定非要mx1前缀，任意都可）
 ### 1. 克隆仓库
