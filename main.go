@@ -23,6 +23,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+var headersToRemove = []string{"x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*"}
 var CONFIG Config
 
 type Config struct {
@@ -333,6 +334,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
 	} else {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
+		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
 	}
 
 	_, err = w.Write(modifiedEmailData)
@@ -382,6 +384,51 @@ func sendToTelegramBot(message string) {
 	}
 	defer resp.Body.Close()
 	log.Printf("Message sent to Telegram bot. Response: %s", resp.Status)
+}
+func removeEmailHeaders(emailData []byte) ([]byte, error) {
+	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
+	if err != nil {
+		return nil, err
+	}
+	// Read the original email headers
+	headers := make(map[string]string)
+	for k, v := range msg.Header {
+		headers[strings.ToLower(k)] = strings.Join(v, ", ") // Store headers in lowercase
+	}
+	// Create regex patterns from the headersToRemove
+	patterns := make([]*regexp.Regexp, len(headersToRemove))
+	for i, header := range headersToRemove {
+		// Convert wildcard '*' to regex pattern
+		regexPattern := "^" + regexp.QuoteMeta(strings.ToLower(header)) + "$"
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*.", ".*") // Match anything after the wildcard
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*", ".*")  // Match anything with wildcard
+		patterns[i] = regexp.MustCompile(regexPattern)
+	}
+	// Remove specified headers
+	for k := range headers {
+		for _, pattern := range patterns {
+			if pattern.MatchString(k) {
+				delete(headers, k)
+				break
+			}
+		}
+	}
+
+	// Build the new email content without the removed headers
+	var buf bytes.Buffer
+	for k, v := range headers {
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	buf.WriteString("\r\n")
+
+	// Append the original email body
+	body, err := io.ReadAll(msg.Body)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(body)
+
+	return buf.Bytes(), nil
 }
 func modifyEmailHeaders(emailData []byte, newSender, newRecipient string) ([]byte, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
