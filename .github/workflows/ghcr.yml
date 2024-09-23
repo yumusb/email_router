@@ -1,8 +1,11 @@
 name: "Build"
-#####
 on:
   push:
     branches: [ master ]
+    paths:
+      - '**/*.go'
+      - 'go.*'
+      - 'build/**'
 
 jobs:
   build-docker:

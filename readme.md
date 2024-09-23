@@ -15,7 +15,7 @@
 ### 前置准备
 
 #### 1. 服务器准备
-公网IP（以223.223.223.223为例），25端口可达，服务器安装好Docker，设置PTR记录（可选，如果只收信则不需要）
+公网IP（以223.223.223.223为例），25端口可达 (可以通过本项目内的`check_port_25_connectivity.sh`进行测试) ，服务器安装好Docker，设置PTR记录（可选，如果只收信则不需要）
 #### 2. 域名准备
 想要使用的域名（以404.local、403.local为例）  
 
@@ -53,8 +53,8 @@ cd email_router/deploy
 DNS_API=dns_cf #目前指定了CF，后续可能完善逻辑
 ACME_SH_EMAIL= #随便一个邮箱，用来初始化acme账户
 MXDOMAIN= #mx服务器的域名，用来申请证书，按照本文中的例子就需要是mx1.404.local
-CF_Token= # 404.local的Zone ID
-CF_Zone_ID= # 权限需要可以操作 404.local的DNS解析
+CF_Token= # 权限需要可以操作 404.local的DNS解析
+CF_Zone_ID= # 404.local的Zone ID
 ```
 ### 3. config.yml配置
 ```yml
