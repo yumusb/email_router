@@ -56,9 +56,14 @@ func LoadConfig(filePath string) error {
 	}
 	return nil
 }
-
+func GetEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
+}
 func main() {
-
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	err := LoadConfig("config.yml")
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
@@ -70,7 +75,7 @@ func main() {
 	// Plain SMTP server with STARTTLS support
 	plainServer := smtp.NewServer(be)
 	plainServer.Addr = CONFIG.SMTP.ListenAddress
-	plainServer.Domain = "localhost"
+	plainServer.Domain = GetEnv("MXDOMAIN", "localhost")
 	plainServer.WriteTimeout = 10 * time.Second
 	plainServer.ReadTimeout = 10 * time.Second
 	plainServer.MaxMessageBytes = 1024 * 1024
@@ -94,7 +99,7 @@ func main() {
 		// SMTPS server (TLS only)
 		tlsServer := smtp.NewServer(be)
 		tlsServer.Addr = CONFIG.SMTP.ListenAddressTls
-		tlsServer.Domain = "localhost"
+		tlsServer.Domain = GetEnv("MXDOMAIN", "localhost")
 		tlsServer.WriteTimeout = 10 * time.Second
 		tlsServer.ReadTimeout = 10 * time.Second
 		tlsServer.MaxMessageBytes = 1024 * 1024
@@ -271,7 +276,7 @@ func getSMTPServer(domain string) (string, error) {
 	return mxRecords[0].Host, nil
 }
 func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string) {
-	log.Printf("Preparing to forward email from %s to %s", formattedSender, targetAddress)
+	log.Printf("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
 	if formattedSender == "" || targetAddress == "" {
 		log.Println("address error")
 		return

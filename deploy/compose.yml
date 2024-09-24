@@ -26,6 +26,8 @@ services:
       - ./config.yml:/app/config.yml:ro
       - ./cert:/cert/
     restart: always
+    environment:
+      - MXDOMAIN=${MXDOMAIN}
     ports:
       - "25:25"
       - "587:587"
