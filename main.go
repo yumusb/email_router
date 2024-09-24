@@ -23,7 +23,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-var headersToRemove = []string{"x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
+var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
 var CONFIG Config
 
 type Config struct {
