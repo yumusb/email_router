@@ -2,12 +2,12 @@ module email_router
 
 go 1.20
 
-require (
-	github.com/emersion/go-smtp v0.21.3
-	gopkg.in/yaml.v2 v2.4.0
-)
+require gopkg.in/yaml.v2 v2.4.0
 
-require github.com/jhillyerd/enmime v1.3.0
+require (
+	github.com/jhillyerd/enmime v1.3.0
+	github.com/yumusb/go-smtp v0.0.0-20240924122305-f5451c7fb690
+)
 
 require (
 	github.com/cention-sany/utf7 v0.0.0-20170124080048-26cad61bd60a // indirect

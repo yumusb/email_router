@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-smtp"
 	"github.com/jhillyerd/enmime"
+	"github.com/yumusb/go-smtp"
 	"gopkg.in/yaml.v2"
 )
 
@@ -299,7 +299,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	tlsConfig := &tls.Config{
 		ServerName: smtpServer,
 	}
-	client, err := smtp.NewClientStartTLS(conn, tlsConfig)
+	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, GetEnv("MXDOMAIN", "localhost"))
 	if err != nil {
 		log.Printf("Failed to init StartTlS,%v", err)
 		return
@@ -389,6 +389,9 @@ func sendToTelegramBot(message string) {
 	}
 	defer resp.Body.Close()
 	log.Printf("Message sent to Telegram bot. Response: %s", resp.Status)
+	if resp.StatusCode != 200 {
+		log.Println(resp.Body)
+	}
 }
 func removeEmailHeaders(emailData []byte) ([]byte, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
