@@ -365,10 +365,19 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	}
 	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, getDomainFromEmail(formattedSender))
 	if err != nil {
-		log.Printf("Failed to init StartTlS,%v", err)
-		return
+		log.Printf("Failed to initialize STARTTLS: %v", err)
+		// If STARTTLS fails, try sending using plain SMTP
+		log.Println("Falling back to plain SMTP (non-TLS)")
+		conn.Close()
+		conn, err = tryDialSMTPPlain(smtpServer, 25)
+		if err != nil {
+			log.Printf("Failed to connect on port 25 for plain SMTP: %v", err)
+			return
+		}
+		defer conn.Close()
+		client = smtp.NewClient(conn)
 	} else {
-		log.Printf("Send Mail to %v using StartTlS", smtpServer)
+		log.Printf("Successfully established STARTTLS connection with %s", smtpServer)
 	}
 	// Ensure the client is closed properly
 	defer func() {
