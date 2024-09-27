@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jhillyerd/enmime"
+	"github.com/mileusna/spf"
 	"github.com/yumusb/go-smtp"
 	"gopkg.in/yaml.v2"
 )
@@ -69,6 +70,8 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 	log.Printf("Telegram Chat ID: %s\n", CONFIG.Telegram.ChatID)
+
+	spf.DNSServer = "1.1.1.1:53"
 
 	be := &Backend{}
 
@@ -162,17 +165,32 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 
 func extractEmails(str string) string {
 	str = strings.TrimSpace(str)
-	startIndex := strings.LastIndex(str, "<")
-	endIndex := strings.LastIndex(str, ">")
-	if startIndex == -1 || endIndex == -1 || startIndex >= endIndex {
+	address, err := mail.ParseAddress(str)
+	if err != nil {
 		return str
 	}
-	email := str[startIndex+1 : endIndex]
-	return email
+	return address.Address
 }
+
 func isValidEmail(email string) bool {
 	_, err := mail.ParseAddress(email)
 	return err == nil
+}
+func getDomainFromEmail(email string) string {
+	// 使用 net/mail 包解析邮箱地址
+	address, err := mail.ParseAddress(email)
+	if err != nil {
+		// 如果解析失败，返回空字符串
+		return ""
+	}
+	// 查找 @ 的位置
+	at := strings.LastIndex(address.Address, "@")
+	if at == -1 {
+		// 如果找不到 @ 返回空字符串
+		return ""
+	}
+	// 直接返回 @ 后面的部分作为域名
+	return address.Address[at+1:]
 }
 func (s *Session) Data(r io.Reader) error {
 	buf := new(bytes.Buffer)
@@ -182,6 +200,13 @@ func (s *Session) Data(r io.Reader) error {
 	}
 	data := buf.Bytes()
 	log.Printf("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s", s.from, s.to, s.remoteIP, s.localIP)
+	remote_host, _, err := net.SplitHostPort(s.remoteIP)
+	if err != nil {
+		log.Println("parse remote addr failed")
+	}
+	remote_ip := net.ParseIP(remote_host)
+	spfResult := spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, "")
+	log.Println(spfResult)
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
 		log.Printf("Failed to parse email: %v", err)
@@ -201,6 +226,7 @@ func (s *Session) Data(r io.Reader) error {
 		"Received email:\n\n"+
 			"From: %s\n"+
 			"To: %s\n"+
+			"SpfStatus: %s\n"+
 			"Subject: %s\n"+
 			"Date: %s\n"+
 			"Content-Type: %s\n\n"+
@@ -208,6 +234,7 @@ func (s *Session) Data(r io.Reader) error {
 			"Attachments:\n%s",
 		s.from,
 		strings.Join(s.to, ", "),
+		spfResult.String(),
 		env.GetHeader("Subject"),
 		env.GetHeader("Date"),
 		env.GetHeader("Content-Type"),
