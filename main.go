@@ -124,14 +124,11 @@ func main() {
 }
 
 type Backend struct {
-	LocalIP string
 }
 
 func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
-	remoteIP := c.Conn().RemoteAddr().String() // Assuming such a method exists
-	// Use the backend's local IP or get it from the server's listener
-	localIP := bkd.LocalIP // This should be set to the server's local IP
-
+	remoteIP := c.Conn().RemoteAddr().String()
+	localIP := c.Conn().LocalAddr().String()
 	session := &Session{
 		remoteIP: remoteIP,
 		localIP:  localIP,
@@ -142,8 +139,8 @@ func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 type Session struct {
 	from     string
 	to       []string
-	remoteIP string // Add a field to store the remote IP
-	localIP  string // Add a field to store the local IP
+	remoteIP string
+	localIP  string
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
