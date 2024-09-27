@@ -206,7 +206,7 @@ func (s *Session) Data(r io.Reader) error {
 	}
 	remote_ip := net.ParseIP(remote_host)
 	spfResult := spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, "")
-	log.Println(spfResult)
+
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
 		log.Printf("Failed to parse email: %v", err)
@@ -241,7 +241,33 @@ func (s *Session) Data(r io.Reader) error {
 		env.Text, // 过滤敏感信息
 		strings.Join(attachments, "\n"),
 	)
-	log.Println("parsed success")
+
+	switch spfResult {
+	case spf.None:
+		log.Printf("SPF Result: NONE - No SPF record found for domain %s", getDomainFromEmail(s.from))
+		// Continue processing the email
+	case spf.Neutral:
+		log.Printf("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
+		// Continue processing the email
+	case spf.Pass:
+		log.Printf("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
+		// Continue processing the email
+	case spf.Fail:
+		log.Printf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
+		// Stop further processing
+		return fmt.Errorf("SPF validation failed: unauthorized sender")
+	case spf.Softfail:
+		log.Printf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
+		// Continue processing the email, but treat it with suspicion
+	case spf.TempError:
+		log.Printf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
+		// Continue processing the email (or decide to retry later)
+	case spf.PermError:
+		log.Printf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
+		// Continue processing or decide to reject based on policy
+	}
+
+	//log.Println("parsed success")
 	for _, recipient := range s.to {
 		recipient = extractEmails(recipient)
 		sender := extractEmails(env.GetHeader("From"))
