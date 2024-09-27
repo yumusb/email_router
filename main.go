@@ -27,6 +27,8 @@ import (
 var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
 var CONFIG Config
 
+const headerPrefix = "X-ROUTER-"
+
 type Config struct {
 	SMTP     SMTPConfig     `yaml:"smtp"`
 	Telegram TelegramConfig `yaml:"telegram"`
@@ -140,10 +142,11 @@ func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 }
 
 type Session struct {
-	from     string
-	to       []string
-	remoteIP string
-	localIP  string
+	from      string
+	to        []string
+	remoteIP  string
+	localIP   string
+	spfResult spf.Result
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
@@ -205,8 +208,7 @@ func (s *Session) Data(r io.Reader) error {
 		log.Println("parse remote addr failed")
 	}
 	remote_ip := net.ParseIP(remote_host)
-	spfResult := spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, "")
-
+	s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, "")
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
 		log.Printf("Failed to parse email: %v", err)
@@ -234,7 +236,7 @@ func (s *Session) Data(r io.Reader) error {
 			"Attachments:\n%s",
 		s.from,
 		strings.Join(s.to, ", "),
-		spfResult.String(),
+		s.spfResult.String(),
 		env.GetHeader("Subject"),
 		env.GetHeader("Date"),
 		env.GetHeader("Content-Type"),
@@ -242,10 +244,11 @@ func (s *Session) Data(r io.Reader) error {
 		strings.Join(attachments, "\n"),
 	)
 
-	switch spfResult {
+	switch s.spfResult {
 	case spf.None:
-		log.Printf("SPF Result: NONE - No SPF record found for domain %s", getDomainFromEmail(s.from))
-		// Continue processing the email
+		log.Printf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
+		// Stop further processing if there's no SPF record
+		return fmt.Errorf("SPF validation failed: no SPF record found")
 	case spf.Neutral:
 		log.Printf("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
 		// Continue processing the email
@@ -301,7 +304,7 @@ func (s *Session) Data(r io.Reader) error {
 							domain)
 						targetAddress = CONFIG.SMTP.PrivateEmail
 					}
-					go forwardEmailToTargetAddress(data, formattedSender, targetAddress)
+					go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
 				} else {
 					log.Println("没配置邮件转发")
 				}
@@ -335,20 +338,18 @@ func getSMTPServer(domain string) (string, error) {
 	}
 	return mxRecords[0].Host, nil
 }
-func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string) {
+func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
 	log.Printf("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
 	if formattedSender == "" || targetAddress == "" {
 		log.Println("address error")
 		return
 	}
-
 	privateDomain := strings.SplitN(targetAddress, "@", 2)[1]
 	smtpServer, err := getSMTPServer(privateDomain)
 	if err != nil {
 		log.Printf("Error getting SMTP server: %v", err)
 		return
 	}
-
 	conn, err := tryDialSMTPPlain(smtpServer, 25)
 	if err != nil {
 		log.Printf("Failed to connect on port 25: %v", err)
@@ -397,6 +398,13 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	var modifiedEmailData []byte
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
+		headersToAdd := map[string]string{
+			"Original-From":   s.from,
+			"Original-to":     strings.Join(s.to, ","),
+			"Original-Server": s.remoteIP,
+			"SPF-RESULT":      s.spfResult.String(),
+		}
+		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
 		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
@@ -498,6 +506,46 @@ func removeEmailHeaders(emailData []byte) ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
+func addEmailHeaders(emailData []byte, headersToAdd map[string]string) ([]byte, error) {
+	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
+	if err != nil {
+		return nil, err
+	}
+
+	// Read the original email headers
+	headers := make(map[string]string)
+	for k, v := range msg.Header {
+		headers[k] = strings.Join(v, ", ") // Store headers with original casing
+	}
+
+	// Add the specified headers with the prefix and uppercase keys
+	for header, value := range headersToAdd {
+		upperHeader := strings.ToUpper(headerPrefix + header) // Add prefix and convert to uppercase
+		if existingValue, exists := headers[upperHeader]; exists {
+			// If the header already exists, append the new value
+			headers[upperHeader] = existingValue + ", " + value
+		} else {
+			headers[upperHeader] = value
+		}
+	}
+
+	// Build the new email content with added headers
+	var buf bytes.Buffer
+	for k, v := range headers {
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	buf.WriteString("\r\n")
+
+	// Append the original email body
+	body, err := io.ReadAll(msg.Body)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(body)
+
+	return buf.Bytes(), nil
+}
+
 func modifyEmailHeaders(emailData []byte, newSender, newRecipient string) ([]byte, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
 	if err != nil {

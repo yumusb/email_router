@@ -100,6 +100,6 @@ docker compose up -d
 
 
 ## 其他问题
-## todo 
-- [ ] spf check
+### todo 
+- [x] spf check
 - [ ] 证书自动续期相关逻辑
