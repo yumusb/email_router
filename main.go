@@ -39,13 +39,14 @@ type SMTPConfig struct {
 	ListenAddressTls string   `yaml:"listen_address_tls"`
 	AllowedDomains   []string `yaml:"allowed_domains"`
 	PrivateEmail     string   `yaml:"private_email"`
-	CertFile         string   `yaml:"cert_file"` // Certificate file path
-	KeyFile          string   `yaml:"key_file"`  // Private key file path
+	CertFile         string   `yaml:"cert_file"`
+	KeyFile          string   `yaml:"key_file"`
 }
 
 type TelegramConfig struct {
 	BotToken string `yaml:"bot_token"`
 	ChatID   string `yaml:"chat_id"`
+	SendEML  bool   `yaml:"send_eml"`
 }
 
 func LoadConfig(filePath string) error {
@@ -134,26 +135,29 @@ type Backend struct {
 func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	remoteIP := c.Conn().RemoteAddr().String()
 	localIP := c.Conn().LocalAddr().String()
+	clientHostname := c.Hostname()
 	session := &Session{
-		remoteIP: remoteIP,
-		localIP:  localIP,
+		remoteIP:       remoteIP,
+		localIP:        localIP,
+		clientHostname: clientHostname,
 	}
 	return session, nil
 }
 
 type Session struct {
-	from      string
-	to        []string
-	remoteIP  string
-	localIP   string
-	spfResult spf.Result
+	from           string
+	to             []string
+	remoteIP       string
+	localIP        string
+	spfResult      spf.Result
+	clientHostname string
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	if !isValidEmail(from) {
 		return errors.New("invalid email address format")
 	}
-	log.Println("Mail from:", from)
+	//log.Println("Mail from:", from)
 	s.from = from
 	return nil
 }
@@ -161,7 +165,7 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if !isValidEmail(to) {
 		return errors.New("invalid email address format")
 	}
-	log.Println("Rcpt to:", to)
+	//log.Println("Rcpt to:", to)
 	s.to = append(s.to, to)
 	return nil
 }
@@ -180,19 +184,14 @@ func isValidEmail(email string) bool {
 	return err == nil
 }
 func getDomainFromEmail(email string) string {
-	// 使用 net/mail 包解析邮箱地址
 	address, err := mail.ParseAddress(email)
 	if err != nil {
-		// 如果解析失败，返回空字符串
 		return ""
 	}
-	// 查找 @ 的位置
 	at := strings.LastIndex(address.Address, "@")
 	if at == -1 {
-		// 如果找不到 @ 返回空字符串
 		return ""
 	}
-	// 直接返回 @ 后面的部分作为域名
 	return address.Address[at+1:]
 }
 func (s *Session) Data(r io.Reader) error {
@@ -202,13 +201,13 @@ func (s *Session) Data(r io.Reader) error {
 		return fmt.Errorf("error reading data: %v", err)
 	}
 	data := buf.Bytes()
-	log.Printf("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s", s.from, s.to, s.remoteIP, s.localIP)
+	log.Printf("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s clientHostname=%s", s.from, s.to, s.remoteIP, s.localIP, s.clientHostname)
 	remote_host, _, err := net.SplitHostPort(s.remoteIP)
 	if err != nil {
 		log.Println("parse remote addr failed")
 	}
 	remote_ip := net.ParseIP(remote_host)
-	s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, "")
+	s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, s.clientHostname)
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
 		log.Printf("Failed to parse email: %v", err)
@@ -283,7 +282,11 @@ func (s *Session) Data(r io.Reader) error {
 				}
 				if CONFIG.Telegram.ChatID != "" {
 					go sendToTelegramBot(parsedContent)
-					go sendRawEMLToTelegram(data, env.GetHeader("Subject"))
+					if CONFIG.Telegram.SendEML {
+						go sendRawEMLToTelegram(data, env.GetHeader("Subject"))
+					} else {
+						log.Println("不发送EML原文")
+					}
 				} else {
 					log.Println("没配置TG转发")
 				}
@@ -360,7 +363,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	tlsConfig := &tls.Config{
 		ServerName: smtpServer,
 	}
-	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, GetEnv("MXDOMAIN", "localhost"))
+	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, getDomainFromEmail(formattedSender))
 	if err != nil {
 		log.Printf("Failed to init StartTlS,%v", err)
 		return

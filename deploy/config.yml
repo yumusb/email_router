@@ -1,6 +1,7 @@
 telegram:
   bot_token: ""
   chat_id: ""
+  send_eml: True
 smtp:
   listen_address: "0.0.0.0:25"
   listen_address_tls: "0.0.0.0:587"
