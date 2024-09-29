@@ -30,7 +30,7 @@ mx1.404.local.	1	IN	A	223.223.223.223
 404.local.	1	IN	MX	5 mx1.404.local.
 
 ;; TXT Records
-404.local.	1	IN	TXT	"v=spf1 ip4:223.223.223.223 -all"
+404.local.	1	IN	TXT	"v=spf1 mx:404.local -all"
 ```
 其他域名需要设置MX记录，SPF记录跟随主域名
 ```txt

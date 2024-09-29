@@ -341,45 +341,61 @@ func getSMTPServer(domain string) (string, error) {
 	}
 	return mxRecords[0].Host, nil
 }
+func isCertInvalidError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check if the error contains information about an invalid certificate
+	if strings.Contains(err.Error(), "x509: certificate signed by unknown authority") ||
+		strings.Contains(err.Error(), "certificate is not trusted") ||
+		strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		return true
+	}
+	return false
+}
 func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
 	log.Printf("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
 	if formattedSender == "" || targetAddress == "" {
-		log.Println("address error")
+		log.Println("Address error: either sender or recipient address is empty")
 		return
 	}
 	privateDomain := strings.SplitN(targetAddress, "@", 2)[1]
 	smtpServer, err := getSMTPServer(privateDomain)
 	if err != nil {
-		log.Printf("Error getting SMTP server: %v", err)
+		log.Printf("Error retrieving SMTP server for domain [%s]: %v", privateDomain, err)
 		return
 	}
+
+	// Attempt to connect to SMTP server using plain connection on port 25
 	conn, err := tryDialSMTPPlain(smtpServer, 25)
 	if err != nil {
-		log.Printf("Failed to connect on port 25: %v", err)
+		log.Printf("Failed to establish connection on port 25: %v", err)
 		return
 	}
 	defer conn.Close()
 
+	// Attempt to initiate STARTTLS for secure email transmission
 	tlsConfig := &tls.Config{
 		ServerName: smtpServer,
 	}
 	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, getDomainFromEmail(formattedSender))
 	if err != nil {
-		log.Printf("Failed to initialize STARTTLS: %v", err)
-		// If STARTTLS fails, try sending using plain SMTP
-		log.Println("Falling back to plain SMTP (non-TLS)")
+		log.Printf("Failed to establish STARTTLS: %v", err)
+		// Downgrade to plain SMTP (non-TLS) because STARTTLS negotiation failed
+		log.Println("Downgrading to plain SMTP due to failed STARTTLS handshake.")
 		conn.Close()
 		conn, err = tryDialSMTPPlain(smtpServer, 25)
 		if err != nil {
-			log.Printf("Failed to connect on port 25 for plain SMTP: %v", err)
+			log.Printf("Failed to reconnect on port 25 for plain SMTP: %v", err)
 			return
 		}
 		defer conn.Close()
-		client = smtp.NewClient(conn)
+		client = smtp.NewClient(conn) // Re-create the SMTP client without encryption
 	} else {
-		log.Printf("Successfully established STARTTLS connection with %s", smtpServer)
+		log.Printf("STARTTLS connection established successfully with [%s]", smtpServer)
 	}
-	// Ensure the client is closed properly
+
+	// Ensure the client connection is properly closed
 	defer func() {
 		if client != nil {
 			client.Quit()
@@ -387,52 +403,76 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		}
 	}()
 
-	// Set the sender
-	if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
-		log.Printf("Error setting sender: %v", err)
-		return
+	// Set the MAIL FROM command with the sender address
+	err = client.Mail(formattedSender, &smtp.MailOptions{})
+	if err != nil {
+		// If there's a certificate validation issue, downgrade to non-TLS
+		if isCertInvalidError(err) {
+			log.Printf("TLS certificate validation failed: %v", err)
+			log.Println("Falling back to plain SMTP as certificate verification failed.")
+			conn.Close()
+			conn, err = tryDialSMTPPlain(smtpServer, 25)
+			if err != nil {
+				log.Printf("Failed to reconnect on port 25 for plain SMTP after TLS failure: %v", err)
+				return
+			}
+			defer conn.Close()
+			client = smtp.NewClient(conn) // Restart the client after failing TLS
+			// Retry sending MAIL FROM after TLS failure
+			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
+				log.Printf("Error setting MAIL FROM on plain SMTP: %v", err)
+				return
+			}
+		} else {
+			log.Printf("Error setting MAIL FROM: %v", err)
+			return
+		}
 	}
 
-	// Set the recipient
+	// Set the RCPT TO command with the recipient address
 	if err := client.Rcpt(targetAddress, &smtp.RcptOptions{}); err != nil {
-		log.Printf("Error setting recipient: %v", err)
+		log.Printf("Error setting RCPT TO: %v", err)
 		return
 	}
 
-	// Get the Data writer and write the email content
+	// Prepare to send the email content
 	w, err := client.Data()
 	if err != nil {
-		log.Printf("Error getting Data writer: %v", err)
+		log.Printf("Error initiating email data transfer: %v", err)
 		return
 	}
 
-	// Modify email headers if necessary
+	// Modify email headers depending on the recipient
 	var modifiedEmailData []byte
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
+		// If the email is being forwarded to a private address, add custom headers
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
 		headersToAdd := map[string]string{
 			"Original-From":   s.from,
-			"Original-to":     strings.Join(s.to, ","),
+			"Original-To":     strings.Join(s.to, ","),
 			"Original-Server": s.remoteIP,
 			"SPF-RESULT":      s.spfResult.String(),
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
+		// Otherwise, just modify headers to adjust sender/recipient as needed
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
-		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
+		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData) // Optionally remove unwanted headers
 	}
 
+	// Write the modified email data to the server
 	_, err = w.Write(modifiedEmailData)
 	if err != nil {
 		log.Printf("Error writing email data: %v", err)
 	}
 
+	// Close the data writer, finalizing the email transmission
 	err = w.Close()
 	if err != nil {
-		log.Printf("Error closing Data writer: %v", err)
+		log.Printf("Error finalizing email data transfer: %v", err)
 	}
 
-	log.Printf("Email successfully forwarded to %s", targetAddress)
+	log.Printf("Email successfully forwarded to [%s]", targetAddress)
 }
 
 func tryDialSMTPPlain(smtpServer string, port int) (net.Conn, error) {
