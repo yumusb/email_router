@@ -2,14 +2,22 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
+	"net/http"
 	"net/mail"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/sirupsen/logrus"
+	"github.com/yumusb/go-smtp"
 	"gopkg.in/yaml.v2"
 )
 
@@ -211,4 +219,266 @@ func (s *Session) Reset() {}
 
 func (s *Session) Logout() error {
 	return nil
+}
+func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	remoteIP := c.Conn().RemoteAddr().String()
+	localIP := c.Conn().LocalAddr().String()
+	clientHostname := c.Hostname()
+	session := &Session{
+		remoteIP:       remoteIP,
+		localIP:        localIP,
+		clientHostname: clientHostname,
+	}
+	return session, nil
+}
+
+func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	if !isValidEmail(from) {
+		return errors.New("invalid email address format")
+	}
+	s.from = from
+	return nil
+}
+func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+	if !isValidEmail(to) {
+		return errors.New("invalid email address format")
+	}
+	s.to = append(s.to, to)
+	return nil
+}
+func sendToTelegramBot(message string) {
+	botToken := CONFIG.Telegram.BotToken
+	chatID := CONFIG.Telegram.ChatID
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"text":    message,
+	}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		logrus.Errorf("Failed to marshal JSON payload: %v", err)
+		return
+	}
+	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		logrus.Errorf("Failed to send message to Telegram bot: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	logrus.Infof("Message sent to Telegram bot. Response: %s", resp.Status)
+	if resp.StatusCode != 200 {
+		logrus.Warn("Non-200 response from Telegram bot")
+	}
+}
+
+func sendRawEMLToTelegram(emailData []byte, subject string) {
+	botToken := CONFIG.Telegram.BotToken
+	chatID := CONFIG.Telegram.ChatID
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", botToken)
+	tmpFile, err := os.CreateTemp("", "email-*.eml")
+	if err != nil {
+		logrus.Errorf("Failed to create temporary file: %v", err)
+		return
+	}
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+	}()
+
+	_, err = tmpFile.Write(emailData)
+	if err != nil {
+		logrus.Errorf("Failed to write email data to file: %v", err)
+		return
+	}
+
+	// 使用安全的文件权限
+	err = os.Chmod(tmpFile.Name(), 0600)
+	if err != nil {
+		logrus.Errorf("Failed to set file permissions: %v", err)
+		return
+	}
+
+	tmpFile.Seek(0, 0)
+	file, err := os.Open(tmpFile.Name())
+	if err != nil {
+		logrus.Errorf("Failed to open temporary file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("document", tmpFile.Name())
+	if err != nil {
+		logrus.Errorf("Failed to create form file: %v", err)
+		return
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		logrus.Errorf("Failed to copy file data: %v", err)
+		return
+	}
+
+	_ = writer.WriteField("chat_id", chatID)
+	_ = writer.WriteField("caption", subject)
+	err = writer.Close()
+	if err != nil {
+		logrus.Errorf("Failed to close writer: %v", err)
+		return
+	}
+
+	req, err := http.NewRequest("POST", apiURL, body)
+	if err != nil {
+		logrus.Errorf("Failed to create HTTP request: %v", err)
+		return
+	}
+	req.Header.Add("Content-Type", writer.FormDataContentType())
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		logrus.Errorf("Failed to send email as EML to Telegram: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	logrus.Infof("Raw EML sent to Telegram bot. Response: %s", resp.Status)
+}
+func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
+	logrus.Infof("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
+	if formattedSender == "" || targetAddress == "" {
+		logrus.Warn("Address error: either sender or recipient address is empty")
+		return
+	}
+	privateDomain := strings.SplitN(targetAddress, "@", 2)[1]
+	smtpServer, err := getSMTPServer(privateDomain)
+	if err != nil {
+		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v", privateDomain, err)
+		return
+	}
+
+	// Attempt to connect to SMTP server using plain connection on port 25
+	conn, err := tryDialSMTPPlain(smtpServer, 25)
+	if err != nil {
+		logrus.Errorf("Failed to establish connection on port 25: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// Attempt to initiate STARTTLS for secure email transmission
+	tlsConfig := &tls.Config{
+		ServerName: smtpServer,
+	}
+	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, getDomainFromEmail(formattedSender))
+	if err != nil {
+		logrus.Errorf("Failed to establish STARTTLS: %v", err)
+		// Downgrade to plain SMTP (non-TLS) because STARTTLS negotiation failed
+		logrus.Warn("Downgrading to plain SMTP due to failed STARTTLS handshake.")
+		conn.Close()
+		conn, err = tryDialSMTPPlain(smtpServer, 25)
+		if err != nil {
+			logrus.Errorf("Failed to reconnect on port 25 for plain SMTP: %v", err)
+			return
+		}
+		defer conn.Close()
+		client = smtp.NewClient(conn) // Re-create the SMTP client without encryption
+	} else {
+		logrus.Infof("STARTTLS connection established successfully with [%s]", smtpServer)
+	}
+
+	// Ensure the client connection is properly closed
+	defer func() {
+		if client != nil {
+			client.Quit()
+			client.Close()
+		}
+	}()
+
+	// Set the MAIL FROM command with the sender address
+	err = client.Mail(formattedSender, &smtp.MailOptions{})
+	if err != nil {
+		// If there's a certificate validation issue, downgrade to non-TLS
+		if isCertInvalidError(err) {
+			logrus.Errorf("TLS certificate validation failed: %v", err)
+			logrus.Warn("Falling back to plain SMTP as certificate verification failed.")
+			conn.Close()
+			conn, err = tryDialSMTPPlain(smtpServer, 25)
+			if err != nil {
+				logrus.Errorf("Failed to reconnect on port 25 for plain SMTP after TLS failure: %v", err)
+				return
+			}
+			defer conn.Close()
+			client = smtp.NewClient(conn) // Restart the client after failing TLS
+			// Retry sending MAIL FROM after TLS failure
+			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
+				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v", err)
+				return
+			}
+		} else {
+			logrus.Errorf("Error setting MAIL FROM: %v", err)
+			return
+		}
+	}
+
+	// Set the RCPT TO command with the recipient address
+	if err := client.Rcpt(targetAddress, &smtp.RcptOptions{}); err != nil {
+		logrus.Errorf("Error setting RCPT TO: %v", err)
+		return
+	}
+
+	// Prepare to send the email content
+	w, err := client.Data()
+	if err != nil {
+		logrus.Errorf("Error initiating email data transfer: %v", err)
+		return
+	}
+
+	// Modify email headers depending on the recipient
+	var modifiedEmailData []byte
+	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
+		// If the email is being forwarded to a private address, add custom headers
+		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
+		headersToAdd := map[string]string{
+			"Original-From":   s.from,
+			"Original-To":     strings.Join(s.to, ","),
+			"Original-Server": s.remoteIP,
+			"SPF-RESULT":      s.spfResult.String(),
+		}
+		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
+	} else {
+		// Otherwise, just modify headers to adjust sender/recipient as needed
+		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
+		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData) // Optionally remove unwanted headers
+	}
+
+	// Write the modified email data to the server
+	_, err = w.Write(modifiedEmailData)
+	if err != nil {
+		logrus.Errorf("Error writing email data: %v", err)
+	}
+
+	// Close the data writer, finalizing the email transmission
+	err = w.Close()
+	if err != nil {
+		logrus.Errorf("Error finalizing email data transfer: %v", err)
+	}
+
+	logrus.Infof("Email successfully forwarded to [%s]", targetAddress)
+}
+
+func tryDialSMTPPlain(smtpServer string, port int) (net.Conn, error) {
+	dialer := net.Dialer{
+		Timeout:   5 * time.Second,  // Connection timeout
+		KeepAlive: 30 * time.Second, // Keep alive interval
+	}
+	address := fmt.Sprintf("%s:%d", smtpServer, port)
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial SMTP server on port %d: %v", port, err)
+	}
+	logrus.Infof("Successfully connected to SMTP server on port %d without TLS", port)
+	return conn, nil
+}
+func getPrimaryContentType(contentType string) string {
+	// Split the Content-Type by semicolon and return the first part
+	parts := strings.Split(contentType, ";")
+	return strings.TrimSpace(parts[0])
 }
