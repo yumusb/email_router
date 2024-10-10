@@ -20,6 +20,6 @@ webhook:
     Authorization: "Bearer my-token"
   body:                                # 请求的Body数据，包含模板变量
     title: "新邮件: {{.Title}}"
-    content: "详情: {{.content}}"
+    content: "详情: {{.Content}}"
     field1: "value1"
   bodyType: "json"                     # 请求体类型，可以是 "json" 或 "form"
