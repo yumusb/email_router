@@ -12,7 +12,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"os"
 	"regexp"
@@ -22,62 +21,8 @@ import (
 	"github.com/jhillyerd/enmime"
 	"github.com/mileusna/spf"
 	"github.com/yumusb/go-smtp"
-	"gopkg.in/yaml.v2"
 )
 
-var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
-var CONFIG Config
-
-const headerPrefix = "X-ROUTER-"
-
-type Config struct {
-	SMTP     SMTPConfig     `yaml:"smtp"`
-	Telegram TelegramConfig `yaml:"telegram"`
-	Webhook  WebhookConfig  `yaml:"webhook"` // 新增 Webhook 配置
-}
-
-type SMTPConfig struct {
-	ListenAddress    string   `yaml:"listen_address"`
-	ListenAddressTls string   `yaml:"listen_address_tls"`
-	AllowedDomains   []string `yaml:"allowed_domains"`
-	PrivateEmail     string   `yaml:"private_email"`
-	CertFile         string   `yaml:"cert_file"`
-	KeyFile          string   `yaml:"key_file"`
-}
-
-type TelegramConfig struct {
-	BotToken string `yaml:"bot_token"`
-	ChatID   string `yaml:"chat_id"`
-	SendEML  bool   `yaml:"send_eml"`
-}
-
-// 新增 WebhookConfig 结构体
-type WebhookConfig struct {
-	Enabled  bool              `yaml:"enabled"`  // 是否启用 Webhook
-	Method   string            `yaml:"method"`   // HTTP 请求方法
-	URL      string            `yaml:"url"`      // Webhook URL
-	Headers  map[string]string `yaml:"headers"`  // 自定义 Headers
-	Body     map[string]string `yaml:"body"`     // 请求体数据（支持模板变量）
-	BodyType string            `yaml:"bodyType"` // 请求体类型，可以是 "json" 或 "form"
-}
-
-func LoadConfig(filePath string) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return err
-	}
-	err = yaml.Unmarshal(data, &CONFIG)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-func GetEnv(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
-}
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	err := LoadConfig("config.yml")
@@ -85,11 +30,8 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 	log.Printf("Telegram Chat ID: %s\n", CONFIG.Telegram.ChatID)
-
 	spf.DNSServer = "1.1.1.1:53"
-
 	be := &Backend{}
-
 	// Plain SMTP server with STARTTLS support
 	plainServer := smtp.NewServer(be)
 	plainServer.Addr = CONFIG.SMTP.ListenAddress
@@ -141,9 +83,6 @@ func main() {
 	}
 }
 
-type Backend struct {
-}
-
 func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	remoteIP := c.Conn().RemoteAddr().String()
 	localIP := c.Conn().LocalAddr().String()
@@ -156,20 +95,10 @@ func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	return session, nil
 }
 
-type Session struct {
-	from           string
-	to             []string
-	remoteIP       string
-	localIP        string
-	spfResult      spf.Result
-	clientHostname string
-}
-
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	if !isValidEmail(from) {
 		return errors.New("invalid email address format")
 	}
-	//log.Println("Mail from:", from)
 	s.from = from
 	return nil
 }
@@ -177,36 +106,16 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if !isValidEmail(to) {
 		return errors.New("invalid email address format")
 	}
-	//log.Println("Rcpt to:", to)
 	s.to = append(s.to, to)
 	return nil
 }
-
-func extractEmails(str string) string {
-	str = strings.TrimSpace(str)
-	address, err := mail.ParseAddress(str)
-	if err != nil {
-		return str
-	}
-	return address.Address
-}
-
-func isValidEmail(email string) bool {
-	_, err := mail.ParseAddress(email)
-	return err == nil
-}
-
-// sendWebhook 函数，传入 title 和 content
 func sendWebhook(config WebhookConfig, title, content string) (*http.Response, error) {
-	// 检查 Webhook 是否启用
 	if !config.Enabled {
 		return nil, fmt.Errorf("webhook is disabled")
 	}
-	// 根据 BodyType 设置请求体格式
 	var requestBody []byte
 	var err error
 	if config.BodyType == "json" {
-		// 使用 title 和 content 格式化 JSON 请求体
 		body := make(map[string]string)
 		for key, value := range config.Body {
 			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
@@ -218,7 +127,6 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 			return nil, err
 		}
 	} else if config.BodyType == "form" {
-		// 使用 title 和 content 格式化 Form 表单
 		form := url.Values{}
 		for key, value := range config.Body {
 			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
@@ -227,14 +135,10 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 		}
 		requestBody = []byte(form.Encode())
 	}
-
-	// 创建 HTTP 请求
 	req, err := http.NewRequest(config.Method, config.URL, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, err
 	}
-
-	// 设置请求头
 	for key, value := range config.Headers {
 		req.Header.Set(key, value)
 	}
@@ -250,18 +154,6 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 	}
 	log.Println(resp.Status)
 	return resp, nil
-}
-
-func getDomainFromEmail(email string) string {
-	address, err := mail.ParseAddress(email)
-	if err != nil {
-		return ""
-	}
-	at := strings.LastIndex(address.Address, "@")
-	if at == -1 {
-		return ""
-	}
-	return address.Address[at+1:]
 }
 func (s *Session) Data(r io.Reader) error {
 	buf := new(bytes.Buffer)
@@ -339,7 +231,6 @@ func (s *Session) Data(r io.Reader) error {
 	)
 	parsedTitle := env.GetHeader("Subject")
 
-	//log.Println("parsed success")
 	for _, recipient := range s.to {
 		recipient = extractEmails(recipient)
 		sender := extractEmails(env.GetHeader("From"))
@@ -394,40 +285,7 @@ func (s *Session) Data(r io.Reader) error {
 	}
 	return nil
 }
-func parseEmails(input string) (string, string) {
-	lastUnderscoreIndex := strings.LastIndex(input, "_")
-	if lastUnderscoreIndex == -1 {
-		return "", ""
-	}
-	secondEmail := input[lastUnderscoreIndex+1:]
-	firstPart := input[:lastUnderscoreIndex]
-	firstEmail := strings.ReplaceAll(firstPart, "_at_", "@")
-	firstEmail = strings.ReplaceAll(firstEmail, "_", ".")
-	return firstEmail, secondEmail
-}
 
-func getSMTPServer(domain string) (string, error) {
-	mxRecords, err := net.LookupMX(domain)
-	if err != nil {
-		return "", fmt.Errorf("failed to lookup MX records: %v", err)
-	}
-	if len(mxRecords) == 0 {
-		return "", fmt.Errorf("no MX records found for domain: %s", domain)
-	}
-	return mxRecords[0].Host, nil
-}
-func isCertInvalidError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Check if the error contains information about an invalid certificate
-	if strings.Contains(err.Error(), "x509: certificate signed by unknown authority") ||
-		strings.Contains(err.Error(), "certificate is not trusted") ||
-		strings.Contains(err.Error(), "tls: failed to verify certificate") {
-		return true
-	}
-	return false
-}
 func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
 	log.Printf("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
 	if formattedSender == "" || targetAddress == "" {
@@ -588,123 +446,6 @@ func sendToTelegramBot(message string) {
 		log.Println(resp.Body)
 	}
 }
-func removeEmailHeaders(emailData []byte) ([]byte, error) {
-	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
-	if err != nil {
-		return nil, err
-	}
-	// Read the original email headers
-	headers := make(map[string]string)
-	for k, v := range msg.Header {
-		headers[strings.ToLower(k)] = strings.Join(v, ", ") // Store headers in lowercase
-	}
-	// Create regex patterns from the headersToRemove
-	patterns := make([]*regexp.Regexp, len(headersToRemove))
-	for i, header := range headersToRemove {
-		// Convert wildcard '*' to regex pattern
-		regexPattern := "^" + regexp.QuoteMeta(strings.ToLower(header)) + "$"
-		regexPattern = strings.ReplaceAll(regexPattern, "\\*.", ".*") // Match anything after the wildcard
-		regexPattern = strings.ReplaceAll(regexPattern, "\\*", ".*")  // Match anything with wildcard
-		patterns[i] = regexp.MustCompile(regexPattern)
-	}
-	// Remove specified headers
-	for k := range headers {
-		for _, pattern := range patterns {
-			if pattern.MatchString(k) {
-				delete(headers, k)
-				break
-			}
-		}
-	}
-
-	// Build the new email content without the removed headers
-	var buf bytes.Buffer
-	for k, v := range headers {
-		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
-	}
-	buf.WriteString("\r\n")
-
-	// Append the original email body
-	body, err := io.ReadAll(msg.Body)
-	if err != nil {
-		return nil, err
-	}
-	buf.Write(body)
-
-	return buf.Bytes(), nil
-}
-func addEmailHeaders(emailData []byte, headersToAdd map[string]string) ([]byte, error) {
-	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
-	if err != nil {
-		return nil, err
-	}
-
-	// Read the original email headers
-	headers := make(map[string]string)
-	for k, v := range msg.Header {
-		headers[k] = strings.Join(v, ", ") // Store headers with original casing
-	}
-
-	// Add the specified headers with the prefix and uppercase keys
-	for header, value := range headersToAdd {
-		upperHeader := strings.ToUpper(headerPrefix + header) // Add prefix and convert to uppercase
-		if existingValue, exists := headers[upperHeader]; exists {
-			// If the header already exists, append the new value
-			headers[upperHeader] = existingValue + ", " + value
-		} else {
-			headers[upperHeader] = value
-		}
-	}
-
-	// Build the new email content with added headers
-	var buf bytes.Buffer
-	for k, v := range headers {
-		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
-	}
-	buf.WriteString("\r\n")
-
-	// Append the original email body
-	body, err := io.ReadAll(msg.Body)
-	if err != nil {
-		return nil, err
-	}
-	buf.Write(body)
-
-	return buf.Bytes(), nil
-}
-
-func modifyEmailHeaders(emailData []byte, newSender, newRecipient string) ([]byte, error) {
-	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
-	if err != nil {
-		return nil, err
-	}
-	// Read the original email headers
-	headers := make(map[string]string)
-	for k, v := range msg.Header {
-		headers[k] = strings.Join(v, ", ")
-	}
-	// Modify the 'From' header
-	if newSender != "" {
-		headers["From"] = newSender
-	}
-	// Modify the 'To' header
-	if newRecipient != "" {
-		headers["To"] = newRecipient
-	}
-	// Build the new email content
-	var buf bytes.Buffer
-	for k, v := range headers {
-		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
-	}
-	buf.WriteString("\r\n")
-	// Append the original email body
-	body, err := io.ReadAll(msg.Body)
-	if err != nil {
-		return nil, err
-	}
-	buf.Write(body)
-	return buf.Bytes(), nil
-}
 func sendRawEMLToTelegram(emailData []byte, subject string) {
 	botToken := CONFIG.Telegram.BotToken
 	chatID := CONFIG.Telegram.ChatID
@@ -775,14 +516,4 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 	}
 	defer resp.Body.Close()
 	log.Printf("Raw EML sent to Telegram bot. Response: %s", resp.Status)
-}
-
-func checkDomain(email, domain string) bool {
-	return strings.HasSuffix(strings.ToLower(email), "@"+strings.ToLower(domain))
-}
-
-func (s *Session) Reset() {}
-
-func (s *Session) Logout() error {
-	return nil
 }
