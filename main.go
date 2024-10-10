@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -32,6 +33,7 @@ const headerPrefix = "X-ROUTER-"
 type Config struct {
 	SMTP     SMTPConfig     `yaml:"smtp"`
 	Telegram TelegramConfig `yaml:"telegram"`
+	Webhook  WebhookConfig  `yaml:"webhook"` // 新增 Webhook 配置
 }
 
 type SMTPConfig struct {
@@ -47,6 +49,16 @@ type TelegramConfig struct {
 	BotToken string `yaml:"bot_token"`
 	ChatID   string `yaml:"chat_id"`
 	SendEML  bool   `yaml:"send_eml"`
+}
+
+// 新增 WebhookConfig 结构体
+type WebhookConfig struct {
+	Enabled  bool              `yaml:"enabled"`  // 是否启用 Webhook
+	Method   string            `yaml:"method"`   // HTTP 请求方法
+	URL      string            `yaml:"url"`      // Webhook URL
+	Headers  map[string]string `yaml:"headers"`  // 自定义 Headers
+	Body     map[string]string `yaml:"body"`     // 请求体数据（支持模板变量）
+	BodyType string            `yaml:"bodyType"` // 请求体类型，可以是 "json" 或 "form"
 }
 
 func LoadConfig(filePath string) error {
@@ -183,6 +195,65 @@ func isValidEmail(email string) bool {
 	_, err := mail.ParseAddress(email)
 	return err == nil
 }
+
+// sendWebhook 函数，传入 title 和 content
+func sendWebhook(config WebhookConfig, title, content string) (*http.Response, error) {
+	// 检查 Webhook 是否启用
+	if !config.Enabled {
+		return nil, fmt.Errorf("webhook is disabled")
+	}
+	// 根据 BodyType 设置请求体格式
+	var requestBody []byte
+	var err error
+	if config.BodyType == "json" {
+		// 使用 title 和 content 格式化 JSON 请求体
+		body := make(map[string]string)
+		for key, value := range config.Body {
+			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
+			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
+			body[key] = formattedValue
+		}
+		requestBody, err = json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+	} else if config.BodyType == "form" {
+		// 使用 title 和 content 格式化 Form 表单
+		form := url.Values{}
+		for key, value := range config.Body {
+			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
+			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
+			form.Add(key, formattedValue)
+		}
+		requestBody = []byte(form.Encode())
+	}
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequest(config.Method, config.URL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, err
+	}
+
+	// 设置请求头
+	for key, value := range config.Headers {
+		req.Header.Set(key, value)
+	}
+	if config.BodyType == "json" {
+		req.Header.Set("Content-Type", "application/json")
+	} else if config.BodyType == "form" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 func getDomainFromEmail(email string) string {
 	address, err := mail.ParseAddress(email)
 	if err != nil {
@@ -223,26 +294,6 @@ func (s *Session) Data(r io.Reader) error {
 			}
 		}
 	}
-	parsedContent := fmt.Sprintf(
-		"Received email:\n\n"+
-			"From: %s\n"+
-			"To: %s\n"+
-			"SpfStatus: %s\n"+
-			"Subject: %s\n"+
-			"Date: %s\n"+
-			"Content-Type: %s\n\n"+
-			"Body:\n%s\n\n"+
-			"Attachments:\n%s",
-		s.from,
-		strings.Join(s.to, ", "),
-		s.spfResult.String(),
-		env.GetHeader("Subject"),
-		env.GetHeader("Date"),
-		env.GetHeader("Content-Type"),
-		env.Text, // 过滤敏感信息
-		strings.Join(attachments, "\n"),
-	)
-
 	switch s.spfResult {
 	case spf.None:
 		log.Printf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
@@ -269,6 +320,27 @@ func (s *Session) Data(r io.Reader) error {
 		// Continue processing or decide to reject based on policy
 	}
 
+	parsedContent := fmt.Sprintf(
+		"Received email:\n\n"+
+			"From: %s\n"+
+			"To: %s\n"+
+			"SpfStatus: %s\n"+
+			"Subject: %s\n"+
+			"Date: %s\n"+
+			"Content-Type: %s\n\n"+
+			"Body:\n%s\n\n"+
+			"Attachments:\n%s",
+		s.from,
+		strings.Join(s.to, ", "),
+		s.spfResult.String(),
+		env.GetHeader("Subject"),
+		env.GetHeader("Date"),
+		env.GetHeader("Content-Type"),
+		env.Text, // 过滤敏感信息
+		strings.Join(attachments, "\n"),
+	)
+	parsedTitle := env.GetHeader("Subject")
+
 	//log.Println("parsed success")
 	for _, recipient := range s.to {
 		recipient = extractEmails(recipient)
@@ -289,6 +361,15 @@ func (s *Session) Data(r io.Reader) error {
 					}
 				} else {
 					log.Println("没配置TG转发")
+				}
+				if CONFIG.Webhook.Enabled {
+					resp, err := sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
+					if err != nil {
+						log.Printf("Error sending webhook: %v\n", err)
+					}
+					log.Printf("Webhook response status: %s\n", resp.Status)
+				} else {
+					log.Println("Webhook is disabled.")
 				}
 				if CONFIG.SMTP.PrivateEmail != "" {
 					formattedSender := ""
@@ -672,7 +753,6 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 		log.Printf("Failed to create form file: %v", err)
 		return
 	}
-
 	_, err = io.Copy(part, file)
 	if err != nil {
 		log.Printf("Failed to copy file data: %v", err)
@@ -692,9 +772,7 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 		log.Printf("Failed to create HTTP request: %v", err)
 		return
 	}
-
 	req.Header.Add("Content-Type", writer.FormDataContentType())
-
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -1,12 +1,25 @@
 telegram:
-  bot_token: ""
-  chat_id: ""
-  send_eml: True
+  bot_token: ""            # Telegram bot的token
+  chat_id: ""              # 发送消息的chat ID
+  send_eml: False           # 是否通过Telegram发送邮件通知
+
 smtp:
-  listen_address: "0.0.0.0:25"
-  listen_address_tls: "0.0.0.0:587"
-  allowed_domains:
+  listen_address: "0.0.0.0:25"         # SMTP服务器监听的地址
+  listen_address_tls: "0.0.0.0:587"    # TLS的监听地址
+  allowed_domains:                     # 允许的域名列表
     - "domain.local"
-  cert_file: "/cert/fullchain.pem"
-  key_file: "/cert/key.pem"
-  private_email: "root@local"
+  cert_file: "/cert/fullchain.pem"     # TLS证书路径
+  key_file: "/cert/key.pem"            # TLS私钥路径
+  private_email: "root@local"          # 私有邮箱地址
+
+webhook:
+  enabled: False                        # 是否启用Webhook功能
+  method: "POST"                       # HTTP方法，例如POST或GET
+  url: "https://example.com/webhook"   # Webhook目标URL
+  headers:                             # 自定义Headers
+    Authorization: "Bearer my-token"
+  body:                                # 请求的Body数据，包含模板变量
+    title: "新邮件: {{.Title}}"
+    content: "详情: {{.content}}"
+    field1: "value1"
+  bodyType: "json"                     # 请求体类型，可以是 "json" 或 "form"
