@@ -184,15 +184,20 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	parsedContent := fmt.Sprintf(
-		"📧 **New Email**\n\n"+
-			"📤 **From**: %s\n"+
-			"📬 **To**: %s\n"+
-			"🔍 **SPF Status**: %s\n"+
-			"📝 **Subject**: %s\n"+
-			"📅 **Date**: %s\n"+
-			"📄 **Content-Type**: %s\n\n"+
-			"✉️ **Body**:\n%s\n\n"+
-			"📎 **Attachments**:\n%s",
+		"📧 New Email Notification\n"+
+			"=================================\n"+
+			"📤 From: %s\n"+
+			"📬 To: %s\n"+
+			"---------------------------------\n"+
+			"🔍 SPF Status: %s\n"+
+			"📝 Subject: %s\n"+
+			"📅 Date: %s\n"+
+			"📄 Content-Type: %s\n"+
+			"=================================\n\n"+
+			"✉️ Email Body:\n\n%s\n\n"+
+			"=================================\n"+
+			"📎 Attachments:\n%s\n"+
+			"=================================",
 		s.from,
 		strings.Join(s.to, ", "),
 		s.spfResult.String(),
@@ -203,7 +208,7 @@ func (s *Session) Data(r io.Reader) error {
 		strings.Join(attachments, "\n"),
 	)
 
-	parsedTitle := fmt.Sprintf("📬 **New Email**: %s", env.GetHeader("Subject"))
+	parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
 
 	for _, recipient := range s.to {
 		recipient = extractEmails(recipient)
