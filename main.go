@@ -243,14 +243,12 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 	} else if config.BodyType == "form" {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-
-	// 发送请求
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-
+	log.Println(resp.Status)
 	return resp, nil
 }
 
@@ -363,11 +361,7 @@ func (s *Session) Data(r io.Reader) error {
 					log.Println("没配置TG转发")
 				}
 				if CONFIG.Webhook.Enabled {
-					resp, err := sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
-					if err != nil {
-						log.Printf("Error sending webhook: %v\n", err)
-					}
-					log.Printf("Webhook response status: %s\n", resp.Status)
+					go sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
 				} else {
 					log.Println("Webhook is disabled.")
 				}
