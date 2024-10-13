@@ -229,14 +229,14 @@ func (s *Session) Logout() error {
 func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	remoteIP := c.Conn().RemoteAddr().String()
 	localIP := c.Conn().LocalAddr().String()
-	clientHostname := c.Hostname()
+	remoteclientHostname := c.Hostname()
 	id := NewUUID()
-	logrus.Infof("New connection from %s to %s (%s) - UUID: %s", remoteIP, localIP, clientHostname, id)
+	logrus.Infof("New connection from %s (%s) to %s - UUID: %s", remoteIP, remoteclientHostname, localIP, id)
 	session := &Session{
-		remoteIP:       remoteIP,
-		localIP:        localIP,
-		clientHostname: clientHostname,
-		UUID:           id,
+		remoteIP:             remoteIP,
+		localIP:              localIP,
+		remoteclientHostname: remoteclientHostname,
+		UUID:                 id,
 	}
 	return session, nil
 }
@@ -255,7 +255,7 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	s.to = append(s.to, to)
 	return nil
 }
-func sendToTelegramBot(message string) {
+func sendToTelegramBot(message string, traceid string) {
 	botToken := CONFIG.Telegram.BotToken
 	chatID := CONFIG.Telegram.ChatID
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
@@ -265,28 +265,28 @@ func sendToTelegramBot(message string) {
 	}
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		logrus.Errorf("Failed to marshal JSON payload: %v", err)
+		logrus.Errorf("Failed to marshal JSON payload - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		logrus.Errorf("Failed to send message to Telegram bot: %v", err)
+		logrus.Errorf("Failed to send message to Telegram bot - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	defer resp.Body.Close()
-	logrus.Infof("Message sent to Telegram bot. Response: %s", resp.Status)
+	logrus.Infof("Message sent to Telegram bot - TraceID: %s, Response: %s", traceid, resp.Status)
 	if resp.StatusCode != 200 {
-		logrus.Warn("Non-200 response from Telegram bot")
+		logrus.Warnf("Non-200 response from Telegram bot - TraceID: %s", traceid)
 	}
 }
 
-func sendRawEMLToTelegram(emailData []byte, subject string) {
+func sendRawEMLToTelegram(emailData []byte, subject string, traceid string) {
 	botToken := CONFIG.Telegram.BotToken
 	chatID := CONFIG.Telegram.ChatID
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", botToken)
 	tmpFile, err := os.CreateTemp("", "email-*.eml")
 	if err != nil {
-		logrus.Errorf("Failed to create temporary file: %v", err)
+		logrus.Errorf("Failed to create temporary file - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	defer func() {
@@ -296,21 +296,21 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 
 	_, err = tmpFile.Write(emailData)
 	if err != nil {
-		logrus.Errorf("Failed to write email data to file: %v", err)
+		logrus.Errorf("Failed to write email data to file - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 
 	// 使用安全的文件权限
 	err = os.Chmod(tmpFile.Name(), 0600)
 	if err != nil {
-		logrus.Errorf("Failed to set file permissions: %v", err)
+		logrus.Errorf("Failed to set file permissions - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 
 	tmpFile.Seek(0, 0)
 	file, err := os.Open(tmpFile.Name())
 	if err != nil {
-		logrus.Errorf("Failed to open temporary file: %v", err)
+		logrus.Errorf("Failed to open temporary file - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	defer file.Close()
@@ -319,12 +319,12 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 	writer := multipart.NewWriter(body)
 	part, err := writer.CreateFormFile("document", tmpFile.Name())
 	if err != nil {
-		logrus.Errorf("Failed to create form file: %v", err)
+		logrus.Errorf("Failed to create form file - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	_, err = io.Copy(part, file)
 	if err != nil {
-		logrus.Errorf("Failed to copy file data: %v", err)
+		logrus.Errorf("Failed to copy file data - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 
@@ -332,42 +332,42 @@ func sendRawEMLToTelegram(emailData []byte, subject string) {
 	_ = writer.WriteField("caption", subject)
 	err = writer.Close()
 	if err != nil {
-		logrus.Errorf("Failed to close writer: %v", err)
+		logrus.Errorf("Failed to close writer - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 
 	req, err := http.NewRequest("POST", apiURL, body)
 	if err != nil {
-		logrus.Errorf("Failed to create HTTP request: %v", err)
+		logrus.Errorf("Failed to create HTTP request - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	req.Header.Add("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		logrus.Errorf("Failed to send email as EML to Telegram: %v", err)
+		logrus.Errorf("Failed to send email as EML to Telegram - TraceID: %s, Error: %v", traceid, err)
 		return
 	}
 	defer resp.Body.Close()
-	logrus.Infof("Raw EML sent to Telegram bot. Response: %s", resp.Status)
+	logrus.Infof("Raw EML sent to Telegram bot - TraceID: %s, Response: %s", traceid, resp.Status)
 }
 func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
-	logrus.Infof("Preparing to forward email from [%s] to [%s]", formattedSender, targetAddress)
+	logrus.Infof("Preparing to forward email from [%s] to [%s] - UUID: %s", formattedSender, targetAddress, s.UUID)
 	if formattedSender == "" || targetAddress == "" {
-		logrus.Warn("Address error: either sender or recipient address is empty")
+		logrus.Warnf("Address error: either sender or recipient address is empty - UUID: %s", s.UUID)
 		return
 	}
 	privateDomain := strings.SplitN(targetAddress, "@", 2)[1]
 	smtpServer, err := getSMTPServer(privateDomain)
 	if err != nil {
-		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v", privateDomain, err)
+		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v - UUID: %s", privateDomain, err, s.UUID)
 		return
 	}
 
 	// Attempt to connect to SMTP server using plain connection on port 25
 	conn, err := tryDialSMTPPlain(smtpServer, 25)
 	if err != nil {
-		logrus.Errorf("Failed to establish connection on port 25: %v", err)
+		logrus.Errorf("Failed to establish connection on port 25: %v - UUID: %s", err, s.UUID)
 		return
 	}
 	defer conn.Close()
@@ -378,19 +378,18 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	}
 	client, err := smtp.NewClientStartTLSWithLocalName(conn, tlsConfig, getDomainFromEmail(formattedSender))
 	if err != nil {
-		logrus.Errorf("Failed to establish STARTTLS: %v", err)
-		// Downgrade to plain SMTP (non-TLS) because STARTTLS negotiation failed
-		logrus.Warn("Downgrading to plain SMTP due to failed STARTTLS handshake.")
+		logrus.Errorf("Failed to establish STARTTLS: %v - UUID: %s", err, s.UUID)
+		logrus.Warnf("Downgrading to plain SMTP due to failed STARTTLS handshake - UUID: %s", s.UUID)
 		conn.Close()
 		conn, err = tryDialSMTPPlain(smtpServer, 25)
 		if err != nil {
-			logrus.Errorf("Failed to reconnect on port 25 for plain SMTP: %v", err)
+			logrus.Errorf("Failed to reconnect on port 25 for plain SMTP: %v - UUID: %s", err, s.UUID)
 			return
 		}
 		defer conn.Close()
 		client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender)) // Re-create the SMTP client without encryption
 	} else {
-		logrus.Infof("STARTTLS connection established successfully with [%s]", smtpServer)
+		logrus.Infof("STARTTLS connection established successfully with [%s] - UUID: %s", smtpServer, s.UUID)
 	}
 
 	// Ensure the client connection is properly closed
@@ -404,66 +403,63 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	// Set the MAIL FROM command with the sender address
 	err = client.Mail(formattedSender, &smtp.MailOptions{})
 	if err != nil {
-		// If there's a certificate validation issue, downgrade to non-TLS
 		if isCertInvalidError(err) {
-			logrus.Errorf("TLS certificate validation failed: %v", err)
-			logrus.Warn("Falling back to plain SMTP as certificate verification failed.")
+			logrus.Errorf("TLS certificate validation failed: %v - UUID: %s", err, s.UUID)
+			logrus.Warnf("Falling back to plain SMTP as certificate verification failed - UUID: %s", s.UUID)
 			conn.Close()
 			conn, err = tryDialSMTPPlain(smtpServer, 25)
 			if err != nil {
-				logrus.Errorf("Failed to reconnect on port 25 for plain SMTP after TLS failure: %v", err)
+				logrus.Errorf("Failed to reconnect on port 25 for plain SMTP after TLS failure: %v - UUID: %s", err, s.UUID)
 				return
 			}
 			defer conn.Close()
-			client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender)) // Restart the client after failing TLS
+			client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender))
 			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
-				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v", err)
+				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v - UUID: %s", err, s.UUID)
 				return
 			}
 		} else {
-			logrus.Errorf("Error setting MAIL FROM: %v", err)
+			logrus.Errorf("Error setting MAIL FROM: %v - UUID: %s", err, s.UUID)
 			return
 		}
 	}
 	if err := client.Rcpt(targetAddress, &smtp.RcptOptions{}); err != nil {
-		logrus.Errorf("Error setting RCPT TO: %v", err)
+		logrus.Errorf("Error setting RCPT TO: %v - UUID: %s", err, s.UUID)
 		return
 	}
 	w, err := client.Data()
 	if err != nil {
-		logrus.Errorf("Error initiating email data transfer: %v", err)
+		logrus.Errorf("Error initiating email data transfer: %v - UUID: %s", err, s.UUID)
 		return
 	}
 	var modifiedEmailData []byte
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
-		// If the email is being forwarded to a private address, add custom headers
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
 		headersToAdd := map[string]string{
-			"Original-From":   s.from,
-			"Original-To":     strings.Join(s.to, ","),
-			"Original-Server": s.remoteIP,
-			"SPF-RESULT":      s.spfResult.String(),
+			"Original-From":       s.from,
+			"Original-To":         strings.Join(s.to, ","),
+			"Original-Server":     s.remoteIP,
+			"Original-SPF-RESULT": s.spfResult.String(),
+			"UUID":                s.UUID,
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
-		// Otherwise, just modify headers to adjust sender/recipient as needed
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
-		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData) // Optionally remove unwanted headers
+		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
 	}
 
 	// Write the modified email data to the server
 	_, err = w.Write(modifiedEmailData)
 	if err != nil {
-		logrus.Errorf("Error writing email data: %v", err)
+		logrus.Errorf("Error writing email data: %v - UUID: %s", err, s.UUID)
 	}
 
 	// Close the data writer, finalizing the email transmission
 	err = w.Close()
 	if err != nil {
-		logrus.Errorf("Error finalizing email data transfer: %v", err)
+		logrus.Errorf("Error finalizing email data transfer: %v - UUID: %s", err, s.UUID)
 	}
-
-	logrus.Infof("Email successfully forwarded to [%s]", targetAddress)
+	logrus.Infof("Email successfully forwarded to [%s] - UUID: %s", targetAddress, s.UUID)
 }
 
 func tryDialSMTPPlain(smtpServer string, port int) (net.Conn, error) {
@@ -484,9 +480,9 @@ func getPrimaryContentType(contentType string) string {
 	parts := strings.Split(contentType, ";")
 	return strings.TrimSpace(parts[0])
 }
-func sendWebhook(config WebhookConfig, title, content string) (*http.Response, error) {
+func sendWebhook(config WebhookConfig, title, content string, traceid string) (*http.Response, error) {
 	if !config.Enabled {
-		return nil, fmt.Errorf("webhook is disabled")
+		return nil, fmt.Errorf("webhook is disabled - TraceID: %s", traceid)
 	}
 	var requestBody []byte
 	var err error
@@ -499,6 +495,7 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 		}
 		requestBody, err = json.Marshal(body)
 		if err != nil {
+			logrus.Errorf("Failed to marshal JSON body - TraceID: %s, Error: %v", traceid, err)
 			return nil, err
 		}
 	} else if config.BodyType == "form" {
@@ -512,6 +509,7 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 	}
 	req, err := http.NewRequest(config.Method, config.URL, bytes.NewBuffer(requestBody))
 	if err != nil {
+		logrus.Errorf("Failed to create HTTP request - TraceID: %s, Error: %v", traceid, err)
 		return nil, err
 	}
 	for key, value := range config.Headers {
@@ -525,9 +523,10 @@ func sendWebhook(config WebhookConfig, title, content string) (*http.Response, e
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		logrus.Errorf("Failed to send webhook request - TraceID: %s, Error: %v", traceid, err)
 		return nil, err
 	}
-	logrus.Infof("Webhook response status: %s", resp.Status)
+	logrus.Infof("Webhook response status - TraceID: %s, Status: %s", traceid, resp.Status)
 	return resp, nil
 }
 func getFirstMatchingEmail(recipients []string) string {

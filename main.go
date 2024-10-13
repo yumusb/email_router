@@ -91,7 +91,7 @@ func SPFCheck(s *Session) *smtp.SMTPError {
 		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 0}, Message: "Invalid remote address"}
 	}
 	remoteIP := net.ParseIP(remoteHost)
-	s.spfResult = spf.CheckHost(remoteIP, getDomainFromEmail(s.from), s.from, s.clientHostname)
+	s.spfResult = spf.CheckHost(remoteIP, getDomainFromEmail(s.from), s.from, s.remoteclientHostname)
 	logrus.Infof("SPF Result: %v - Domain: %s, Remote IP: %s, Sender: %s - UUID: %s", s.spfResult, getDomainFromEmail(s.from), remoteHost, s.from, s.UUID)
 	switch s.spfResult {
 	case spf.None:
@@ -224,9 +224,9 @@ func (s *Session) Data(r io.Reader) error {
 		go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
 		if outsite2private {
 			if CONFIG.Telegram.ChatID != "" {
-				go sendToTelegramBot(parsedContent)
+				go sendToTelegramBot(parsedContent, s.UUID)
 				if CONFIG.Telegram.SendEML {
-					go sendRawEMLToTelegram(data, env.GetHeader("Subject"))
+					go sendRawEMLToTelegram(data, env.GetHeader("Subject"), s.UUID)
 				} else {
 					logrus.Info("Telegram EML is disabled.")
 				}
@@ -234,7 +234,7 @@ func (s *Session) Data(r io.Reader) error {
 				logrus.Info("Telegram is disabled.")
 			}
 			if CONFIG.Webhook.Enabled {
-				go sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
+				go sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent, s.UUID)
 			} else {
 				logrus.Info("Webhook is disabled.")
 			}

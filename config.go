@@ -40,11 +40,11 @@ type WebhookConfig struct {
 type Backend struct {
 }
 type Session struct {
-	from           string
-	to             []string
-	remoteIP       string
-	localIP        string
-	spfResult      spf.Result
-	clientHostname string
-	UUID           string
+	from                 string
+	to                   []string
+	remoteIP             string
+	localIP              string
+	spfResult            spf.Result
+	remoteclientHostname string
+	UUID                 string
 }
