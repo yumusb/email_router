@@ -94,8 +94,8 @@ func SPFCheck(s *Session) *smtp.SMTPError {
 	remoteIP := net.ParseIP(remoteHost)
 	s.spfResult, err = spf.CheckHostWithSender(remoteIP, s.remoteclientHostname, s.from)
 	if err != nil {
-		logrus.Warnf("SPF check failed: %v - UUID: %s", err, s.UUID)
-		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "SPF check failed"}
+		logrus.Warnf("SPF check Result: %v - UUID: %s", err, s.UUID)
+		//return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "SPF check failed"}
 	}
 	logrus.Infof("SPF Result: %v - Domain: %s, Remote IP: %s, Sender: %s - UUID: %s", s.spfResult, getDomainFromEmail(s.from), remoteHost, s.from, s.UUID)
 	switch s.spfResult {
