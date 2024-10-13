@@ -167,6 +167,9 @@ func modifyEmailHeaders(emailData []byte, newSender, newRecipient string) ([]byt
 	buf.Write(body)
 	return buf.Bytes(), nil
 }
+func smtpResponse(statusCode int, message string) error {
+	return fmt.Errorf("%d: %s", statusCode, message)
+}
 func checkDomain(email, domain string) bool {
 	return strings.HasSuffix(strings.ToLower(email), "@"+strings.ToLower(domain))
 }
@@ -379,7 +382,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			return
 		}
 		defer conn.Close()
-		client = smtp.NewClient(conn) // Re-create the SMTP client without encryption
+		client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender)) // Re-create the SMTP client without encryption
 	} else {
 		logrus.Infof("STARTTLS connection established successfully with [%s]", smtpServer)
 	}
@@ -406,7 +409,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 				return
 			}
 			defer conn.Close()
-			client = smtp.NewClient(conn) // Restart the client after failing TLS
+			client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender)) // Restart the client after failing TLS
 			// Retry sending MAIL FROM after TLS failure
 			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
 				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v", err)

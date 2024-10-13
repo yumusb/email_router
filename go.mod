@@ -8,7 +8,7 @@ require (
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/mileusna/spf v0.9.5
 	github.com/sirupsen/logrus v1.9.3
-	github.com/yumusb/go-smtp v0.0.0-20240924122305-f5451c7fb690
+	github.com/yumusb/go-smtp v0.0.0-20241013125232-63ad8b4f888a
 )
 
 require (

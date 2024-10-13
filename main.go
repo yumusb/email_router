@@ -176,20 +176,23 @@ func (s *Session) Data(r io.Reader) error {
 				switch s.spfResult {
 				case spf.None:
 					logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
-					return fmt.Errorf("SPF validation failed: no SPF record found")
+					return smtpResponse(450, "SPF check softfail (no SPF record)")
 				case spf.Neutral:
 					logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
 				case spf.Pass:
 					logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
 				case spf.Fail:
 					logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
-					return fmt.Errorf("SPF validation failed: unauthorized sender")
+					return smtpResponse(550, "SPF check failed")
 				case spf.Softfail:
 					logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
+					return smtpResponse(450, "SPF check softfail")
 				case spf.TempError:
 					logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
+					return smtpResponse(451, "Temporary SPF check error")
 				case spf.PermError:
 					logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
+					return smtpResponse(550, "SPF check permanent error")
 				}
 				parsedContent := fmt.Sprintf(
 					"📧 New Email Notification\n"+
@@ -260,10 +263,9 @@ func (s *Session) Data(r io.Reader) error {
 				break
 			} else {
 				logrus.Info("收件人不是允许的收件域，不需要处理", recipient)
-
 			}
 
 		}
 	}
-	return fmt.Errorf("521 Recipient address rejected")
+	return smtpResponse(521, "Recipient address rejected")
 }
