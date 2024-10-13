@@ -5,6 +5,7 @@ go 1.20
 require gopkg.in/yaml.v2 v2.4.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/mileusna/spf v0.9.5
 	github.com/sirupsen/logrus v1.9.3

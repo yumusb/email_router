@@ -84,36 +84,36 @@ func main() {
 		}
 	}
 }
-func SPFCheck(s *Session) error {
+func SPFCheck(s *Session) *smtp.SMTPError {
 	remoteHost, _, err := net.SplitHostPort(s.remoteIP)
 	if err != nil {
 		logrus.Warn("parse remote addr failed")
-		return err
+		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 0}, Message: "Invalid remote address"}
 	}
 	remoteIP := net.ParseIP(remoteHost)
 	s.spfResult = spf.CheckHost(remoteIP, getDomainFromEmail(s.from), s.from, s.clientHostname)
+	logrus.Infof("SPF Result: %v - Domain: %s, Remote IP: %s, Sender: %s - UUID: %s", s.spfResult, getDomainFromEmail(s.from), remoteHost, s.from, s.UUID)
 	switch s.spfResult {
 	case spf.None:
 		logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
-		return smtpResponse(450, "SPF check softfail (no SPF record)")
+		return &smtp.SMTPError{Code: 450, EnhancedCode: smtp.EnhancedCode{5, 0, 0}, Message: "SPF check softfail (no SPF record)"}
 	case spf.Neutral:
 		logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
 	case spf.Pass:
 		logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
 	case spf.Fail:
 		logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
-		return smtpResponse(550, "SPF check failed")
+		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "SPF check failed"}
 	case spf.Softfail:
 		logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
-		return smtpResponse(450, "SPF check softfail")
+		return &smtp.SMTPError{Code: 450, EnhancedCode: smtp.EnhancedCode{5, 0, 1}, Message: "SPF check softfail"}
 	case spf.TempError:
 		logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
-		return smtpResponse(451, "Temporary SPF check error")
+		return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 0, 0}, Message: "Temporary SPF check error"}
 	case spf.PermError:
 		logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
-		return smtpResponse(550, "SPF check permanent error")
+		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 2}, Message: "SPF check permanent error"}
 	}
-
 	return nil // SPF 检查通过，返回 nil
 }
 
@@ -123,23 +123,28 @@ func (s *Session) Data(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("error reading data: %v", err)
 	}
-	logrus.Infof("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s clientHostname=%s", s.from, s.to, s.remoteIP, s.localIP, s.clientHostname)
+
 	if !shouldForwardEmail(s.to) {
-		return smtpResponse(521, "Recipient address rejected")
+		logrus.Warnf("Not handled by this mail server, %s - UUID: %s", s.to, s.UUID)
+		return &smtp.SMTPError{
+			Code:         554,
+			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+			Message:      "Domain not handled by this mail server",
+		}
 	}
+
 	spfCheckErr := SPFCheck(s)
 	if spfCheckErr != nil {
-		logrus.Errorf("SPF check failed: %v", spfCheckErr)
+		logrus.Errorf("SPF check failed: %v - UUID: %s", spfCheckErr, s.UUID)
 		return spfCheckErr
 	}
 	data := buf.Bytes()
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
-		logrus.Errorf("Failed to parse email: %v", err)
+		logrus.Errorf("Failed to parse email: %v - UUID: %s", err, s.UUID)
 		return err
 	}
-	logrus.Infof("Received email: From=%s To=%s Subject=%s", env.GetHeader("From"), env.GetHeader("To"), env.GetHeader("Subject"))
-	logrus.Info("Preparing to forward email")
+	logrus.Infof("Received email: From=%s To=%s Subject=%s - UUID: %s", env.GetHeader("From"), env.GetHeader("To"), env.GetHeader("Subject"), s.UUID)
 	var attachments []string
 	for _, attachment := range env.Attachments {
 		disposition := attachment.Header.Get("Content-Disposition")
@@ -164,7 +169,8 @@ func (s *Session) Data(r io.Reader) error {
 			"✉️ Email Body:\n\n%s\n\n"+
 			"=================================\n"+
 			"📎 Attachments:\n%s\n"+
-			"=================================",
+			"=================================\n"+
+			"🔑 UUID: %s",
 		s.from,
 		strings.Join(s.to, ", "),
 		s.spfResult.String(),
@@ -173,14 +179,19 @@ func (s *Session) Data(r io.Reader) error {
 		getPrimaryContentType(env.GetHeader("Content-Type")),
 		env.Text,
 		strings.Join(attachments, "\n"),
+		s.UUID,
 	)
 	parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
 	sender := extractEmails(env.GetHeader("From"))
 	recipient := getFirstMatchingEmail(s.to)
 	if !strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") && !regexp.MustCompile(`^(\w|-)+@.+$`).MatchString(recipient) {
 		// 验证收件人的规则
-		logrus.Warn("不符合规则的收件人，需要是random@qq.com、ran-dom@qq.com，当前为", recipient)
-		return smtpResponse(550, "Invalid recipient")
+		logrus.Warnf("不符合规则的收件人，需要是 random@qq.com、ran-dom@qq.com，当前为 %s - UUID: %s", recipient, s.UUID)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 0},
+			Message:      "Invalid recipient",
+		}
 	}
 	var outsite2private bool
 	outsite2private = false
@@ -193,7 +204,7 @@ func (s *Session) Data(r io.Reader) error {
 			targetAddress = originsenderEmail
 			formattedSender = selfsenderEmail
 			outsite2private = false
-			logrus.Infof("Private 2 outside,Forwarding email from %s to %s", sender, formattedSender)
+			logrus.Infof("Private 2 outside, Forwarding email from %s to %s - UUID: %s", sender, formattedSender, s.UUID)
 		} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
 			// 来自私密邮箱，但目标邮箱写的有问题
 			logrus.Info("not need forward", sender, recipient)
@@ -207,7 +218,7 @@ func (s *Session) Data(r io.Reader) error {
 				strings.Split(recipient, "@")[0],
 				domain)
 			targetAddress = CONFIG.SMTP.PrivateEmail
-			logrus.Infof("Outside 2 private,Forwarding email from %s to %s", sender, formattedSender)
+			logrus.Infof("Outside 2 private, Forwarding email from %s to %s - UUID: %s", sender, formattedSender, s.UUID)
 			outsite2private = true
 		}
 		go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)

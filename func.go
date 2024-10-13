@@ -17,11 +17,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/yumusb/go-smtp"
 	"gopkg.in/yaml.v2"
 )
 
+func NewUUID() string {
+	uuidV4 := uuid.New()
+	return uuidV4.String()
+}
 func GetEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
@@ -168,9 +173,6 @@ func modifyEmailHeaders(emailData []byte, newSender, newRecipient string) ([]byt
 	buf.Write(body)
 	return buf.Bytes(), nil
 }
-func smtpResponse(statusCode int, message string) error {
-	return fmt.Errorf("%d: %s", statusCode, message)
-}
 func checkDomain(email, domain string) bool {
 	return strings.HasSuffix(strings.ToLower(email), "@"+strings.ToLower(domain))
 }
@@ -228,10 +230,13 @@ func (bkd *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	remoteIP := c.Conn().RemoteAddr().String()
 	localIP := c.Conn().LocalAddr().String()
 	clientHostname := c.Hostname()
+	id := NewUUID()
+	logrus.Infof("New connection from %s to %s (%s) - UUID: %s", remoteIP, localIP, clientHostname, id)
 	session := &Session{
 		remoteIP:       remoteIP,
 		localIP:        localIP,
 		clientHostname: clientHostname,
+		UUID:           id,
 	}
 	return session, nil
 }

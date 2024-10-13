@@ -28,7 +28,6 @@ type TelegramConfig struct {
 	SendEML  bool   `yaml:"send_eml"`
 }
 
-// 新增 WebhookConfig 结构体
 type WebhookConfig struct {
 	Enabled  bool              `yaml:"enabled"`  // 是否启用 Webhook
 	Method   string            `yaml:"method"`   // HTTP 请求方法
@@ -47,4 +46,5 @@ type Session struct {
 	localIP        string
 	spfResult      spf.Result
 	clientHostname string
+	UUID           string
 }
