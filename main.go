@@ -3,13 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -87,52 +84,37 @@ func main() {
 		}
 	}
 }
+func SPFCheck(s *Session) error {
+	remoteHost, _, err := net.SplitHostPort(s.remoteIP)
+	if err != nil {
+		logrus.Warn("parse remote addr failed")
+		return err
+	}
+	remoteIP := net.ParseIP(remoteHost)
+	s.spfResult = spf.CheckHost(remoteIP, getDomainFromEmail(s.from), s.from, s.clientHostname)
+	switch s.spfResult {
+	case spf.None:
+		logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
+		return smtpResponse(450, "SPF check softfail (no SPF record)")
+	case spf.Neutral:
+		logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
+	case spf.Pass:
+		logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
+	case spf.Fail:
+		logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
+		return smtpResponse(550, "SPF check failed")
+	case spf.Softfail:
+		logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
+		return smtpResponse(450, "SPF check softfail")
+	case spf.TempError:
+		logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
+		return smtpResponse(451, "Temporary SPF check error")
+	case spf.PermError:
+		logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
+		return smtpResponse(550, "SPF check permanent error")
+	}
 
-func sendWebhook(config WebhookConfig, title, content string) (*http.Response, error) {
-	if !config.Enabled {
-		return nil, fmt.Errorf("webhook is disabled")
-	}
-	var requestBody []byte
-	var err error
-	if config.BodyType == "json" {
-		body := make(map[string]string)
-		for key, value := range config.Body {
-			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
-			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
-			body[key] = formattedValue
-		}
-		requestBody, err = json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-	} else if config.BodyType == "form" {
-		form := url.Values{}
-		for key, value := range config.Body {
-			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
-			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
-			form.Add(key, formattedValue)
-		}
-		requestBody = []byte(form.Encode())
-	}
-	req, err := http.NewRequest(config.Method, config.URL, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return nil, err
-	}
-	for key, value := range config.Headers {
-		req.Header.Set(key, value)
-	}
-	if config.BodyType == "json" {
-		req.Header.Set("Content-Type", "application/json")
-	} else if config.BodyType == "form" {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	logrus.Infof("Webhook response status: %s", resp.Status)
-	return resp, nil
+	return nil // SPF 检查通过，返回 nil
 }
 
 func (s *Session) Data(r io.Reader) error {
@@ -141,131 +123,112 @@ func (s *Session) Data(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("error reading data: %v", err)
 	}
+	logrus.Infof("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s clientHostname=%s", s.from, s.to, s.remoteIP, s.localIP, s.clientHostname)
+	if !shouldForwardEmail(s.to) {
+		return smtpResponse(521, "Recipient address rejected")
+	}
+	spfCheckErr := SPFCheck(s)
+	if spfCheckErr != nil {
+		logrus.Errorf("SPF check failed: %v", spfCheckErr)
+		return spfCheckErr
+	}
 	data := buf.Bytes()
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("error parsing email: %v", err)
+		logrus.Errorf("Failed to parse email: %v", err)
+		return err
 	}
-	logrus.Infof("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s clientHostname=%s", s.from, s.to, s.remoteIP, s.localIP, s.clientHostname)
-	remote_host, _, err := net.SplitHostPort(s.remoteIP)
-	if err != nil {
-		logrus.Warn("parse remote addr failed")
-	}
-	remote_ip := net.ParseIP(remote_host)
-	for _, recipient := range s.to {
-		recipient = extractEmails(recipient)
-		sender := extractEmails(env.GetHeader("From"))
-		for _, domain := range CONFIG.SMTP.AllowedDomains {
-			if checkDomain(recipient, domain) {
-				logrus.Info("收件人是允许的收件域，需要进一步处理")
-				s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, s.clientHostname)
-				if err != nil {
-					logrus.Errorf("Failed to parse email: %v", err)
-					return err
-				}
-				var attachments []string
-				for _, attachment := range env.Attachments {
-					disposition := attachment.Header.Get("Content-Disposition")
-					if disposition != "" {
-						_, params, _ := mime.ParseMediaType(disposition)
-						if filename, ok := params["filename"]; ok {
-							attachments = append(attachments, filename)
-						}
-					}
-				}
-				switch s.spfResult {
-				case spf.None:
-					logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
-					return smtpResponse(450, "SPF check softfail (no SPF record)")
-				case spf.Neutral:
-					logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
-				case spf.Pass:
-					logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
-				case spf.Fail:
-					logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
-					return smtpResponse(550, "SPF check failed")
-				case spf.Softfail:
-					logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
-					return smtpResponse(450, "SPF check softfail")
-				case spf.TempError:
-					logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
-					return smtpResponse(451, "Temporary SPF check error")
-				case spf.PermError:
-					logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
-					return smtpResponse(550, "SPF check permanent error")
-				}
-				parsedContent := fmt.Sprintf(
-					"📧 New Email Notification\n"+
-						"=================================\n"+
-						"📤 From: %s\n"+
-						"📬 To: %s\n"+
-						"---------------------------------\n"+
-						"🔍 SPF Status: %s\n"+
-						"📝 Subject: %s\n"+
-						"📅 Date: %s\n"+
-						"📄 Content-Type: %s\n"+
-						"=================================\n\n"+
-						"✉️ Email Body:\n\n%s\n\n"+
-						"=================================\n"+
-						"📎 Attachments:\n%s\n"+
-						"=================================",
-					s.from,
-					strings.Join(s.to, ", "),
-					s.spfResult.String(),
-					env.GetHeader("Subject"),
-					env.GetHeader("Date"),
-					getPrimaryContentType(env.GetHeader("Content-Type")),
-					env.Text,
-					strings.Join(attachments, "\n"),
-				)
-				parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
-				if !strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") && !regexp.MustCompile(`^(\w|-)+@.+$`).MatchString(recipient) {
-					logrus.Warn("不符合规则的收件人，需要是random@qq.com、ran-dom@qq.com，当前为", recipient)
-					break
-				}
-				if CONFIG.Telegram.ChatID != "" {
-					go sendToTelegramBot(parsedContent)
-					if CONFIG.Telegram.SendEML {
-						go sendRawEMLToTelegram(data, env.GetHeader("Subject"))
-					} else {
-						logrus.Info("不发送EML原文")
-					}
-				} else {
-					logrus.Info("没配置TG转发")
-				}
-				if CONFIG.Webhook.Enabled {
-					go sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
-				} else {
-					logrus.Info("Webhook is disabled.")
-				}
-				if CONFIG.SMTP.PrivateEmail != "" {
-					formattedSender := ""
-					targetAddress := ""
-					if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && strings.Contains(recipient, "_at_") {
-						originsenderEmail, selfsenderEmail := parseEmails(recipient)
-						targetAddress = originsenderEmail
-						formattedSender = selfsenderEmail
-					} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
-						logrus.Info("not need forward", sender, recipient)
-						break
-					} else {
-						formattedSender = fmt.Sprintf("%s_%s@%s",
-							strings.ReplaceAll(strings.ReplaceAll(sender, "@", "_at_"), ".", "_"),
-							strings.Split(recipient, "@")[0],
-							domain)
-						targetAddress = CONFIG.SMTP.PrivateEmail
-					}
-					go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
-
-				} else {
-					logrus.Info("没配置邮件转发")
-				}
-				break
-			} else {
-				logrus.Info("收件人不是允许的收件域，不需要处理", recipient)
+	logrus.Infof("Received email: From=%s To=%s Subject=%s", env.GetHeader("From"), env.GetHeader("To"), env.GetHeader("Subject"))
+	logrus.Info("收件人是允许的收件域，需要进一步处理")
+	var attachments []string
+	for _, attachment := range env.Attachments {
+		disposition := attachment.Header.Get("Content-Disposition")
+		if disposition != "" {
+			_, params, _ := mime.ParseMediaType(disposition)
+			if filename, ok := params["filename"]; ok {
+				attachments = append(attachments, filename)
 			}
-
 		}
 	}
-	return smtpResponse(521, "Recipient address rejected")
+	parsedContent := fmt.Sprintf(
+		"📧 New Email Notification\n"+
+			"=================================\n"+
+			"📤 From: %s\n"+
+			"📬 To: %s\n"+
+			"---------------------------------\n"+
+			"🔍 SPF Status: %s\n"+
+			"📝 Subject: %s\n"+
+			"📅 Date: %s\n"+
+			"📄 Content-Type: %s\n"+
+			"=================================\n\n"+
+			"✉️ Email Body:\n\n%s\n\n"+
+			"=================================\n"+
+			"📎 Attachments:\n%s\n"+
+			"=================================",
+		s.from,
+		strings.Join(s.to, ", "),
+		s.spfResult.String(),
+		env.GetHeader("Subject"),
+		env.GetHeader("Date"),
+		getPrimaryContentType(env.GetHeader("Content-Type")),
+		env.Text,
+		strings.Join(attachments, "\n"),
+	)
+	parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
+	sender := extractEmails(env.GetHeader("From"))
+	recipient := getFirstMatchingEmail(s.to)
+	if !strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") && !regexp.MustCompile(`^(\w|-)+@.+$`).MatchString(recipient) {
+		// 验证收件人的规则
+		logrus.Warn("不符合规则的收件人，需要是random@qq.com、ran-dom@qq.com，当前为", recipient)
+		return smtpResponse(550, "Invalid recipient")
+	}
+	var outsite2inbox bool
+	outsite2inbox = false
+	if CONFIG.SMTP.PrivateEmail != "" {
+		formattedSender := ""
+		targetAddress := ""
+		if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && strings.Contains(recipient, "_at_") {
+			// 来自私密邮箱，需要将邮件转发到目标邮箱
+			originsenderEmail, selfsenderEmail := parseEmails(recipient)
+			targetAddress = originsenderEmail
+			formattedSender = selfsenderEmail
+			outsite2inbox = false
+		} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
+			// 来自私密邮箱，但目标邮箱写的有问题
+			logrus.Info("not need forward", sender, recipient)
+			// 不需要转发，但是可能需要通知给用户。
+			return smtpResponse(250, "OK")
+		} else {
+			// 来自非私密邮箱，需要将邮件转发到私密邮箱
+			domain := getDomainFromEmail(recipient)
+			formattedSender = fmt.Sprintf("%s_%s@%s",
+				strings.ReplaceAll(strings.ReplaceAll(sender, "@", "_at_"), ".", "_"),
+				strings.Split(recipient, "@")[0],
+				domain)
+			targetAddress = CONFIG.SMTP.PrivateEmail
+			logrus.Infof("Forwarding email from %s to %s", sender, formattedSender)
+			outsite2inbox = true
+		}
+		go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
+		if outsite2inbox {
+			if CONFIG.Telegram.ChatID != "" {
+				go sendToTelegramBot(parsedContent)
+				if CONFIG.Telegram.SendEML {
+					go sendRawEMLToTelegram(data, env.GetHeader("Subject"))
+				} else {
+					logrus.Info("Telegram EML is disabled.")
+				}
+			} else {
+				logrus.Info("Telegram is disabled.")
+			}
+			if CONFIG.Webhook.Enabled {
+				go sendWebhook(CONFIG.Webhook, parsedTitle, parsedContent)
+			} else {
+				logrus.Info("Webhook is disabled.")
+			}
+		}
+	} else {
+		logrus.Info("Email forwarder is disabled.")
+	}
+	return smtpResponse(250, "OK")
 }

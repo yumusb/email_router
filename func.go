@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -410,7 +411,6 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			}
 			defer conn.Close()
 			client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender)) // Restart the client after failing TLS
-			// Retry sending MAIL FROM after TLS failure
 			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
 				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v", err)
 				return
@@ -420,21 +420,15 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			return
 		}
 	}
-
-	// Set the RCPT TO command with the recipient address
 	if err := client.Rcpt(targetAddress, &smtp.RcptOptions{}); err != nil {
 		logrus.Errorf("Error setting RCPT TO: %v", err)
 		return
 	}
-
-	// Prepare to send the email content
 	w, err := client.Data()
 	if err != nil {
 		logrus.Errorf("Error initiating email data transfer: %v", err)
 		return
 	}
-
-	// Modify email headers depending on the recipient
 	var modifiedEmailData []byte
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
 		// If the email is being forwarded to a private address, add custom headers
@@ -484,4 +478,74 @@ func getPrimaryContentType(contentType string) string {
 	// Split the Content-Type by semicolon and return the first part
 	parts := strings.Split(contentType, ";")
 	return strings.TrimSpace(parts[0])
+}
+func sendWebhook(config WebhookConfig, title, content string) (*http.Response, error) {
+	if !config.Enabled {
+		return nil, fmt.Errorf("webhook is disabled")
+	}
+	var requestBody []byte
+	var err error
+	if config.BodyType == "json" {
+		body := make(map[string]string)
+		for key, value := range config.Body {
+			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
+			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
+			body[key] = formattedValue
+		}
+		requestBody, err = json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+	} else if config.BodyType == "form" {
+		form := url.Values{}
+		for key, value := range config.Body {
+			formattedValue := strings.ReplaceAll(value, "{{.Title}}", title)
+			formattedValue = strings.ReplaceAll(formattedValue, "{{.Content}}", content)
+			form.Add(key, formattedValue)
+		}
+		requestBody = []byte(form.Encode())
+	}
+	req, err := http.NewRequest(config.Method, config.URL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range config.Headers {
+		req.Header.Set(key, value)
+	}
+	if config.BodyType == "json" {
+		req.Header.Set("Content-Type", "application/json")
+	} else if config.BodyType == "form" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	logrus.Infof("Webhook response status: %s", resp.Status)
+	return resp, nil
+}
+func getFirstMatchingEmail(recipients []string) string {
+	// Loop through all recipients
+	for _, recipient := range recipients {
+		recipientEmail := extractEmails(recipient)
+		for _, domain := range CONFIG.SMTP.AllowedDomains {
+			if checkDomain(recipientEmail, domain) {
+				return recipientEmail
+			}
+		}
+	}
+	return ""
+}
+func shouldForwardEmail(recipients []string) bool {
+	// Loop through all recipients
+	for _, recipient := range recipients {
+		recipientEmail := extractEmails(recipient)
+		for _, domain := range CONFIG.SMTP.AllowedDomains {
+			if checkDomain(recipientEmail, domain) {
+				return true // Forward if recipient matches allowed domain
+			}
+		}
+	}
+	return false // No matching domains, no forwarding
 }
