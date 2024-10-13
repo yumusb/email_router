@@ -139,7 +139,7 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 	logrus.Infof("Received email: From=%s To=%s Subject=%s", env.GetHeader("From"), env.GetHeader("To"), env.GetHeader("Subject"))
-	logrus.Info("收件人是允许的收件域，需要进一步处理")
+	logrus.Info("Preparing to forward email")
 	var attachments []string
 	for _, attachment := range env.Attachments {
 		disposition := attachment.Header.Get("Content-Disposition")
@@ -182,8 +182,8 @@ func (s *Session) Data(r io.Reader) error {
 		logrus.Warn("不符合规则的收件人，需要是random@qq.com、ran-dom@qq.com，当前为", recipient)
 		return smtpResponse(550, "Invalid recipient")
 	}
-	var outsite2inbox bool
-	outsite2inbox = false
+	var outsite2private bool
+	outsite2private = false
 	if CONFIG.SMTP.PrivateEmail != "" {
 		formattedSender := ""
 		targetAddress := ""
@@ -192,12 +192,13 @@ func (s *Session) Data(r io.Reader) error {
 			originsenderEmail, selfsenderEmail := parseEmails(recipient)
 			targetAddress = originsenderEmail
 			formattedSender = selfsenderEmail
-			outsite2inbox = false
+			outsite2private = false
+			logrus.Infof("Private 2 outside,Forwarding email from %s to %s", sender, formattedSender)
 		} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
 			// 来自私密邮箱，但目标邮箱写的有问题
 			logrus.Info("not need forward", sender, recipient)
 			// 不需要转发，但是可能需要通知给用户。
-			return smtpResponse(250, "OK")
+			return nil
 		} else {
 			// 来自非私密邮箱，需要将邮件转发到私密邮箱
 			domain := getDomainFromEmail(recipient)
@@ -206,11 +207,11 @@ func (s *Session) Data(r io.Reader) error {
 				strings.Split(recipient, "@")[0],
 				domain)
 			targetAddress = CONFIG.SMTP.PrivateEmail
-			logrus.Infof("Forwarding email from %s to %s", sender, formattedSender)
-			outsite2inbox = true
+			logrus.Infof("Outside 2 private,Forwarding email from %s to %s", sender, formattedSender)
+			outsite2private = true
 		}
 		go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
-		if outsite2inbox {
+		if outsite2private {
 			if CONFIG.Telegram.ChatID != "" {
 				go sendToTelegramBot(parsedContent)
 				if CONFIG.Telegram.SendEML {
@@ -230,5 +231,5 @@ func (s *Session) Data(r io.Reader) error {
 	} else {
 		logrus.Info("Email forwarder is disabled.")
 	}
-	return smtpResponse(250, "OK")
+	return nil
 }
