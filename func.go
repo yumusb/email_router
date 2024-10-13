@@ -439,7 +439,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			"Original-From":       s.from,
 			"Original-To":         strings.Join(s.to, ","),
 			"Original-Server":     s.remoteIP,
-			"Original-SPF-RESULT": s.spfResult.String(),
+			"Original-SPF-RESULT": string(s.spfResult),
 			"UUID":                s.UUID,
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)

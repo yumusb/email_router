@@ -1,6 +1,6 @@
 package main
 
-import "github.com/mileusna/spf"
+import "blitiri.com.ar/go/spf"
 
 var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
 var CONFIG Config

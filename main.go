@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/jhillyerd/enmime"
-	"github.com/mileusna/spf"
+	//"github.com/mileusna/spf"
+	"blitiri.com.ar/go/spf"
 	"github.com/sirupsen/logrus" // 引入logrus包
 	"github.com/yumusb/go-smtp"
 )
@@ -30,7 +31,7 @@ func main() {
 		logrus.Fatalf("Error loading config: %v", err)
 	}
 	logrus.Infof("Telegram Chat ID: %s", CONFIG.Telegram.ChatID)
-	spf.DNSServer = "1.1.1.1:53"
+	//spf.DNSServer = "1.1.1.1:53"
 
 	be := &Backend{}
 
@@ -91,7 +92,11 @@ func SPFCheck(s *Session) *smtp.SMTPError {
 		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 0}, Message: "Invalid remote address"}
 	}
 	remoteIP := net.ParseIP(remoteHost)
-	s.spfResult = spf.CheckHost(remoteIP, getDomainFromEmail(s.from), s.from, s.remoteclientHostname)
+	s.spfResult, err = spf.CheckHostWithSender(remoteIP, s.remoteclientHostname, s.from)
+	if err != nil {
+		logrus.Warnf("SPF check failed: %v - UUID: %s", err, s.UUID)
+		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "SPF check failed"}
+	}
 	logrus.Infof("SPF Result: %v - Domain: %s, Remote IP: %s, Sender: %s - UUID: %s", s.spfResult, getDomainFromEmail(s.from), remoteHost, s.from, s.UUID)
 	switch s.spfResult {
 	case spf.None:
@@ -104,7 +109,7 @@ func SPFCheck(s *Session) *smtp.SMTPError {
 	case spf.Fail:
 		logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
 		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "SPF check failed"}
-	case spf.Softfail:
+	case spf.SoftFail:
 		logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
 		return &smtp.SMTPError{Code: 450, EnhancedCode: smtp.EnhancedCode{5, 0, 1}, Message: "SPF check softfail"}
 	case spf.TempError:
@@ -173,7 +178,7 @@ func (s *Session) Data(r io.Reader) error {
 			"🔑 UUID: %s",
 		s.from,
 		strings.Join(s.to, ", "),
-		s.spfResult.String(),
+		s.spfResult,
 		env.GetHeader("Subject"),
 		env.GetHeader("Date"),
 		getPrimaryContentType(env.GetHeader("Content-Type")),
