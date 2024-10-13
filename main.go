@@ -253,14 +253,17 @@ func (s *Session) Data(r io.Reader) error {
 						targetAddress = CONFIG.SMTP.PrivateEmail
 					}
 					go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
+
 				} else {
 					logrus.Info("没配置邮件转发")
 				}
 				break
 			} else {
 				logrus.Info("收件人不是允许的收件域，不需要处理", recipient)
+
 			}
+
 		}
 	}
-	return nil
+	return fmt.Errorf("521 Recipient address rejected")
 }
