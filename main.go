@@ -142,80 +142,80 @@ func (s *Session) Data(r io.Reader) error {
 		return fmt.Errorf("error reading data: %v", err)
 	}
 	data := buf.Bytes()
+	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("error parsing email: %v", err)
+	}
 	logrus.Infof("Received email: From=%s To=%s RemoteIP=%s LocalIP=%s clientHostname=%s", s.from, s.to, s.remoteIP, s.localIP, s.clientHostname)
 	remote_host, _, err := net.SplitHostPort(s.remoteIP)
 	if err != nil {
 		logrus.Warn("parse remote addr failed")
 	}
 	remote_ip := net.ParseIP(remote_host)
-	s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, s.clientHostname)
-	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
-	if err != nil {
-		logrus.Errorf("Failed to parse email: %v", err)
-		return err
-	}
-	var attachments []string
-	for _, attachment := range env.Attachments {
-		disposition := attachment.Header.Get("Content-Disposition")
-		if disposition != "" {
-			_, params, _ := mime.ParseMediaType(disposition)
-			if filename, ok := params["filename"]; ok {
-				attachments = append(attachments, filename)
-			}
-		}
-	}
-	switch s.spfResult {
-	case spf.None:
-		logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
-		return fmt.Errorf("SPF validation failed: no SPF record found")
-	case spf.Neutral:
-		logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
-	case spf.Pass:
-		logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
-	case spf.Fail:
-		logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
-		return fmt.Errorf("SPF validation failed: unauthorized sender")
-	case spf.Softfail:
-		logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
-	case spf.TempError:
-		logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
-	case spf.PermError:
-		logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
-	}
-
-	parsedContent := fmt.Sprintf(
-		"📧 New Email Notification\n"+
-			"=================================\n"+
-			"📤 From: %s\n"+
-			"📬 To: %s\n"+
-			"---------------------------------\n"+
-			"🔍 SPF Status: %s\n"+
-			"📝 Subject: %s\n"+
-			"📅 Date: %s\n"+
-			"📄 Content-Type: %s\n"+
-			"=================================\n\n"+
-			"✉️ Email Body:\n\n%s\n\n"+
-			"=================================\n"+
-			"📎 Attachments:\n%s\n"+
-			"=================================",
-		s.from,
-		strings.Join(s.to, ", "),
-		s.spfResult.String(),
-		env.GetHeader("Subject"),
-		env.GetHeader("Date"),
-		getPrimaryContentType(env.GetHeader("Content-Type")),
-		env.Text,
-		strings.Join(attachments, "\n"),
-	)
-
-	parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
-
 	for _, recipient := range s.to {
 		recipient = extractEmails(recipient)
 		sender := extractEmails(env.GetHeader("From"))
 		for _, domain := range CONFIG.SMTP.AllowedDomains {
 			if checkDomain(recipient, domain) {
 				logrus.Info("收件人是允许的收件域，需要进一步处理")
+				s.spfResult = spf.CheckHost(remote_ip, getDomainFromEmail(s.from), s.from, s.clientHostname)
+				if err != nil {
+					logrus.Errorf("Failed to parse email: %v", err)
+					return err
+				}
+				var attachments []string
+				for _, attachment := range env.Attachments {
+					disposition := attachment.Header.Get("Content-Disposition")
+					if disposition != "" {
+						_, params, _ := mime.ParseMediaType(disposition)
+						if filename, ok := params["filename"]; ok {
+							attachments = append(attachments, filename)
+						}
+					}
+				}
+				switch s.spfResult {
+				case spf.None:
+					logrus.Warnf("SPF Result: NONE - No SPF record found for domain %s. Rejecting email.", getDomainFromEmail(s.from))
+					return fmt.Errorf("SPF validation failed: no SPF record found")
+				case spf.Neutral:
+					logrus.Infof("SPF Result: NEUTRAL - Domain %s neither permits nor denies sending mail from IP %s", getDomainFromEmail(s.from), s.remoteIP)
+				case spf.Pass:
+					logrus.Infof("SPF Result: PASS - SPF check passed for domain %s, email is legitimate", getDomainFromEmail(s.from))
+				case spf.Fail:
+					logrus.Warnf("SPF Result: FAIL - SPF check failed for domain %s, mail from IP %s is unauthorized", getDomainFromEmail(s.from), s.remoteIP)
+					return fmt.Errorf("SPF validation failed: unauthorized sender")
+				case spf.Softfail:
+					logrus.Warnf("SPF Result: SOFTFAIL - SPF check soft failed for domain %s, email is suspicious", getDomainFromEmail(s.from))
+				case spf.TempError:
+					logrus.Warnf("SPF Result: TEMPERROR - Temporary SPF error occurred for domain %s, retry might succeed", getDomainFromEmail(s.from))
+				case spf.PermError:
+					logrus.Warnf("SPF Result: PERMERROR - Permanent SPF error for domain %s, SPF record is invalid", getDomainFromEmail(s.from))
+				}
+				parsedContent := fmt.Sprintf(
+					"📧 New Email Notification\n"+
+						"=================================\n"+
+						"📤 From: %s\n"+
+						"📬 To: %s\n"+
+						"---------------------------------\n"+
+						"🔍 SPF Status: %s\n"+
+						"📝 Subject: %s\n"+
+						"📅 Date: %s\n"+
+						"📄 Content-Type: %s\n"+
+						"=================================\n\n"+
+						"✉️ Email Body:\n\n%s\n\n"+
+						"=================================\n"+
+						"📎 Attachments:\n%s\n"+
+						"=================================",
+					s.from,
+					strings.Join(s.to, ", "),
+					s.spfResult.String(),
+					env.GetHeader("Subject"),
+					env.GetHeader("Date"),
+					getPrimaryContentType(env.GetHeader("Content-Type")),
+					env.Text,
+					strings.Join(attachments, "\n"),
+				)
+				parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
 				if !strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") && !regexp.MustCompile(`^(\w|-)+@.+$`).MatchString(recipient) {
 					logrus.Warn("不符合规则的收件人，需要是random@qq.com、ran-dom@qq.com，当前为", recipient)
 					break
