@@ -423,7 +423,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	// Ensure the client connection is properly closed
 	defer func() {
 		if client != nil {
-			client.Quit()
+			client.Quit() // Attempt to gracefully close the connection with QUIT
 			client.Close()
 		}
 	}()
@@ -448,18 +448,34 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			}
 		} else {
 			logrus.Errorf("Error setting MAIL FROM: %v - UUID: %s", err, s.UUID)
+			if smtpErr, ok := err.(*smtp.SMTPError); ok && smtpErr.Code >= 500 {
+				logrus.Errorf("MAIL FROM rejected by server with code %d: %v - UUID: %s", smtpErr.Code, smtpErr, s.UUID)
+				return
+			}
+			logrus.Errorf("Error setting MAIL FROM: %v - UUID: %s", err, s.UUID)
 			return
 		}
 	}
-	if err := client.Rcpt(targetAddress, &smtp.RcptOptions{}); err != nil {
+
+	// Set the RCPT TO command with the recipient address
+	err = client.Rcpt(targetAddress, &smtp.RcptOptions{})
+	if err != nil {
+		if smtpErr, ok := err.(*smtp.SMTPError); ok && smtpErr.Code >= 500 {
+			logrus.Errorf("RCPT TO rejected by server with code %d: %v - UUID: %s", smtpErr.Code, smtpErr, s.UUID)
+			return
+		}
 		logrus.Errorf("Error setting RCPT TO: %v - UUID: %s", err, s.UUID)
 		return
 	}
+
+	// Start the DATA command
 	w, err := client.Data()
 	if err != nil {
 		logrus.Errorf("Error initiating email data transfer: %v - UUID: %s", err, s.UUID)
 		return
 	}
+
+	// Modify email data
 	var modifiedEmailData []byte
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
@@ -480,12 +496,20 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	_, err = w.Write(modifiedEmailData)
 	if err != nil {
 		logrus.Errorf("Error writing email data: %v - UUID: %s", err, s.UUID)
+		return
 	}
 
-	// Close the data writer, finalizing the email transmission
+	// Close the data writer
 	err = w.Close()
 	if err != nil {
 		logrus.Errorf("Error finalizing email data transfer: %v - UUID: %s", err, s.UUID)
+		return
+	}
+
+	// Quit the SMTP session
+	err = client.Quit()
+	if err != nil {
+		logrus.Errorf("Error sending QUIT command: %v - UUID: %s", err, s.UUID)
 	}
 	logrus.Infof("Email successfully forwarded to [%s] - UUID: %s", targetAddress, s.UUID)
 }
