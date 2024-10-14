@@ -209,7 +209,7 @@ func (s *Session) Data(r io.Reader) error {
 			targetAddress = originsenderEmail
 			formattedSender = selfsenderEmail
 			outsite2private = false
-			logrus.Infof("Private 2 outside, Forwarding email from %s to %s - UUID: %s", sender, formattedSender, s.UUID)
+			logrus.Infof("Private 2 outside, ([%s] → [%s]) changed to ([%s] → [%s]) - UUID: %s", sender, recipient, formattedSender, targetAddress, s.UUID)
 		} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
 			// 来自私密邮箱，但目标邮箱写的有问题
 			logrus.Info("not need forward", sender, recipient)
@@ -223,7 +223,7 @@ func (s *Session) Data(r io.Reader) error {
 				strings.Split(recipient, "@")[0],
 				domain)
 			targetAddress = CONFIG.SMTP.PrivateEmail
-			logrus.Infof("Outside 2 private, Forwarding email from %s to %s - UUID: %s", sender, formattedSender, s.UUID)
+			logrus.Infof("Outside 2 private, ([%s] → [%s]) changed to ([%s] → [%s]) - UUID: %s", sender, recipient, formattedSender, targetAddress, s.UUID)
 			outsite2private = true
 		}
 		go forwardEmailToTargetAddress(data, formattedSender, targetAddress, s)
