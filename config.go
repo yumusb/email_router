@@ -6,6 +6,7 @@ var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*",
 var CONFIG Config
 
 const headerPrefix = "X-ROUTER-"
+const telegramMaxLength = 4096
 
 type Config struct {
 	SMTP     SMTPConfig     `yaml:"smtp"`

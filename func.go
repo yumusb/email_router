@@ -255,28 +255,56 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	s.to = append(s.to, to)
 	return nil
 }
+func splitMessage(message string, maxLength int) []string {
+	var messages []string
+	runes := []rune(message) // 支持多字节字符
+	for len(runes) > maxLength {
+		// 尝试在最后一个空格处分割，避免将单词或句子截断
+		splitIndex := maxLength
+		for splitIndex > 0 && runes[splitIndex] != ' ' {
+			splitIndex--
+		}
+		if splitIndex == 0 {
+			splitIndex = maxLength // 如果找不到空格，就强制在 maxLength 处截断
+		}
+		messages = append(messages, string(runes[:splitIndex]))
+		runes = runes[splitIndex:]
+	}
+	messages = append(messages, string(runes)) // 追加最后的剩余部分
+	return messages
+}
+
 func sendToTelegramBot(message string, traceid string) {
 	botToken := CONFIG.Telegram.BotToken
 	chatID := CONFIG.Telegram.ChatID
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
-	payload := map[string]interface{}{
-		"chat_id": chatID,
-		"text":    message,
-	}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		logrus.Errorf("Failed to marshal JSON payload - TraceID: %s, Error: %v", traceid, err)
-		return
-	}
-	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		logrus.Errorf("Failed to send message to Telegram bot - TraceID: %s, Error: %v", traceid, err)
-		return
-	}
-	defer resp.Body.Close()
-	logrus.Infof("Message sent to Telegram bot - TraceID: %s, Response: %s", traceid, resp.Status)
-	if resp.StatusCode != 200 {
-		logrus.Warnf("Non-200 response from Telegram bot - TraceID: %s", traceid)
+
+	// 分割消息
+	messages := splitMessage(message, telegramMaxLength)
+
+	// 依次发送每个分割后的消息
+	for _, msgPart := range messages {
+		payload := map[string]interface{}{
+			"chat_id": chatID,
+			"text":    msgPart,
+		}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			logrus.Errorf("Failed to marshal JSON payload - TraceID: %s, Error: %v", traceid, err)
+			return
+		}
+
+		resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			logrus.Errorf("Failed to send message to Telegram bot - TraceID: %s, Error: %v", traceid, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		logrus.Infof("Message sent to Telegram bot - TraceID: %s, Response: %s", traceid, resp.Status)
+		if resp.StatusCode != 200 {
+			logrus.Warnf("Non-200 response from Telegram bot - TraceID: %s", traceid)
+		}
 	}
 }
 
