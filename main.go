@@ -212,7 +212,7 @@ func (s *Session) Data(r io.Reader) error {
 			logrus.Infof("Private 2 outside, ([%s] → [%s]) changed to ([%s] → [%s]) - UUID: %s", sender, recipient, formattedSender, targetAddress, s.UUID)
 		} else if strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") {
 			// 来自私密邮箱，但目标邮箱写的有问题
-			logrus.Info("not need forward", sender, recipient)
+			logrus.Infof("not need forward, from %s to %s - UUID: %s", sender, recipient, s.UUID)
 			// 不需要转发，但是可能需要通知给用户。
 			return nil
 		} else {
