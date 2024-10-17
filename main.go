@@ -187,6 +187,10 @@ func (s *Session) Data(r io.Reader) error {
 		s.UUID,
 	)
 	parsedTitle := fmt.Sprintf("📬 New Email: %s", env.GetHeader("Subject"))
+	s.msgId = env.GetHeader("Message-ID")
+	if s.msgId == "" {
+		s.msgId = env.GetHeader("Message-Id")
+	}
 	sender := extractEmails(env.GetHeader("From"))
 	recipient := getFirstMatchingEmail(s.to)
 	if !strings.EqualFold(sender, CONFIG.SMTP.PrivateEmail) && !strings.Contains(recipient, "_at_") && !regexp.MustCompile(`^(\w|-)+@.+$`).MatchString(recipient) {

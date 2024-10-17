@@ -2,7 +2,7 @@ package main
 
 import "blitiri.com.ar/go/spf"
 
-var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*"}
+var headersToRemove = []string{"x-*", "x-spam-*", "x-mailer", "x-originating-*", "x-qq-*", "dkim-*", "x-google-*", "x-cm-*", "x-coremail-*", "x-bq-*", "message-id"}
 var CONFIG Config
 
 const headerPrefix = "X-ROUTER-"
@@ -48,4 +48,5 @@ type Session struct {
 	spfResult            spf.Result
 	remoteclientHostname string
 	UUID                 string
+	msgId                string
 }

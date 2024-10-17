@@ -385,10 +385,11 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		logrus.Warnf("Address error: either sender or recipient address is empty - UUID: %s", s.UUID)
 		return
 	}
-	privateDomain := strings.SplitN(targetAddress, "@", 2)[1]
-	smtpServer, err := getSMTPServer(privateDomain)
+	targetDomain := strings.SplitN(targetAddress, "@", 2)[1]
+	senderDomain := strings.SplitN(formattedSender, "@", 2)[1]
+	smtpServer, err := getSMTPServer(targetDomain)
 	if err != nil {
-		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v - UUID: %s", privateDomain, err, s.UUID)
+		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v - UUID: %s", targetDomain, err, s.UUID)
 		return
 	}
 
@@ -483,13 +484,19 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			"Original-From":       s.from,
 			"Original-To":         strings.Join(s.to, ","),
 			"Original-Server":     s.remoteIP,
-			"Original-SPF-RESULT": string(s.spfResult),
+			"Original-Spf-Result": string(s.spfResult),
+			"Original-Message-Id": s.msgId,
+			"Message-Id":          fmt.Sprintf("<%s@%s>", s.UUID, senderDomain),
 			"UUID":                s.UUID,
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
 		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
+		headersToAdd := map[string]string{
+			"Message-Id": fmt.Sprintf("<%s@%s>", s.UUID, senderDomain),
+		}
+		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	}
 
 	// Write the modified email data to the server
