@@ -128,21 +128,6 @@ func (s *Session) Data(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("error reading data: %v", err)
 	}
-
-	if !shouldForwardEmail(s.to) {
-		logrus.Warnf("Not handled by this mail server, %s - UUID: %s", s.to, s.UUID)
-		return &smtp.SMTPError{
-			Code:         554,
-			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
-			Message:      "Domain not handled by this mail server",
-		}
-	}
-
-	spfCheckErr := SPFCheck(s)
-	if spfCheckErr != nil {
-		logrus.Errorf("SPF check failed: %v - UUID: %s", spfCheckErr, s.UUID)
-		return spfCheckErr
-	}
 	data := buf.Bytes()
 	env, err := enmime.ReadEnvelope(bytes.NewReader(data))
 	if err != nil {

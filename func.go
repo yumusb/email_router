@@ -251,6 +251,11 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 		return errors.New("invalid email address format")
 	}
 	s.from = from
+	spfCheckErr := SPFCheck(s)
+	if spfCheckErr != nil {
+		logrus.Errorf("SPF check failed: %v - UUID: %s", spfCheckErr, s.UUID)
+		return spfCheckErr
+	}
 	return nil
 }
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
@@ -258,6 +263,14 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		return errors.New("invalid email address format")
 	}
 	s.to = append(s.to, to)
+	if !shouldForwardEmail(s.to) {
+		logrus.Warnf("Not handled by this mail server, %s - UUID: %s", s.to, s.UUID)
+		return &smtp.SMTPError{
+			Code:         554,
+			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+			Message:      "Domain not handled by this mail server",
+		}
+	}
 	return nil
 }
 func splitMessage(message string, maxLength int) []string {
