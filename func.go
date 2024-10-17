@@ -115,12 +115,17 @@ func addEmailHeaders(emailData []byte, headersToAdd map[string]string) ([]byte, 
 
 	// Add the specified headers with the prefix and uppercase keys
 	for header, value := range headersToAdd {
-		upperHeader := strings.ToUpper(headerPrefix + header) // Add prefix and convert to uppercase
-		if existingValue, exists := headers[upperHeader]; exists {
-			// If the header already exists, append the new value
-			headers[upperHeader] = existingValue + ", " + value
+		newheader := ""
+		if strings.Contains(header, "Original") {
+			newheader = strings.ToUpper(headerPrefix + header)
 		} else {
-			headers[upperHeader] = value
+			newheader = header
+		}
+		if existingValue, exists := headers[newheader]; exists {
+			// If the header already exists, append the new value
+			headers[newheader] = existingValue + ", " + value
+		} else {
+			headers[newheader] = value
 		}
 	}
 
