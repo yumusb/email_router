@@ -134,7 +134,13 @@ func (s *Session) Data(r io.Reader) error {
 		logrus.Errorf("Failed to parse email: %v - UUID: %s", err, s.UUID)
 		return err
 	}
-	logrus.Infof("Received email: From=%s To=%s Subject=%s - UUID: %s", env.GetHeader("From"), env.GetHeader("To"), env.GetHeader("Subject"), s.UUID)
+	logrus.Infof("Received email: From=%s HeaderTo=%s ParsedTo=%v Subject=%s - UUID: %s",
+		env.GetHeader("From"),
+		env.GetHeader("To"),
+		s.to,
+		env.GetHeader("Subject"),
+		s.UUID)
+
 	var attachments []string
 	for _, attachment := range env.Attachments {
 		disposition := attachment.Header.Get("Content-Disposition")
