@@ -26,4 +26,4 @@ jobs:
           registry: ghcr.io
           dockerfile: build/Dockerfile
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
