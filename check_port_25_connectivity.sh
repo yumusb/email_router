@@ -8,6 +8,33 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # 无颜色
 
+# 检查必需的命令是否安装
+check_requirements() {
+    local missing_commands=()
+    
+    # 检查 dig 命令
+    if ! command -v dig &> /dev/null; then
+        missing_commands+=("dig (dnsutils 或 bind-utils)")
+    fi
+    
+    # 检查 nc 命令
+    if ! command -v nc &> /dev/null; then
+        missing_commands+=("nc (netcat)")
+    fi
+    
+    # 如果有缺失的命令，显示安装建议
+    if [ ${#missing_commands[@]} -ne 0 ]; then
+        echo -e "${RED}错误: 以下命令未安装:${NC}"
+        for cmd in "${missing_commands[@]}"; do
+            echo "  - $cmd"
+        done
+        echo -e "\n请使用包管理器安装缺失的包:"
+        echo "Ubuntu/Debian: sudo apt install dnsutils netcat"
+        echo "CentOS/RHEL: sudo yum install bind-utils nc"
+        exit 1
+    fi
+}
+
 # 检查每个域名的MX服务器是否能连接到25端口
 check_mx_port_25() {
     local domain=$1
@@ -33,6 +60,9 @@ check_mx_port_25() {
         fi
     done
 }
+
+# 在主程序开始前调用检查
+check_requirements
 
 # 遍历所有域名进行检查
 for domain in "${domains[@]}"; do
