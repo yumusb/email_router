@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"github.com/toorop/go-dkim" // 添加 DKIM 库
 	"github.com/yumusb/go-smtp"
 	"gopkg.in/yaml.v2"
 )
@@ -397,6 +402,24 @@ func sendRawEMLToTelegram(emailData []byte, subject string, traceid string) {
 	defer resp.Body.Close()
 	logrus.Infof("Raw EML sent to Telegram bot - TraceID: %s, Response: %s", traceid, resp.Status)
 }
+func checkDMARCRecord(domain string) (bool, error) {
+	dmarcDomain := "_dmarc." + domain
+	txtRecords, err := net.LookupTXT(dmarcDomain)
+	if err != nil {
+		// 如果查询出错，可能是没有DMARC记录或DNS查询失败
+		if dnsErr, ok := err.(*net.DNSError); ok && dnsErr.IsNotFound {
+			return false, nil // 域名存在但没有DMARC记录
+		}
+		return false, err // 其他DNS错误
+	}
+	// 检查是否有DMARC记录
+	for _, record := range txtRecords {
+		if strings.HasPrefix(strings.ToLower(record), "v=dmarc1") {
+			return true, nil // 找到DMARC记录
+		}
+	}
+	return false, nil // 没有找到DMARC记录
+}
 func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targetAddress string, s *Session) {
 	logrus.Infof("Preparing to forward email from [%s] to [%s] - UUID: %s", formattedSender, targetAddress, s.UUID)
 	if formattedSender == "" || targetAddress == "" {
@@ -405,6 +428,24 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	}
 	targetDomain := strings.SplitN(targetAddress, "@", 2)[1]
 	senderDomain := strings.SplitN(formattedSender, "@", 2)[1]
+
+	// 检查是否需要应用DMARC签名
+	useDMARC := false
+	if CONFIG.SMTP.EnableDMARC {
+		// 应该检查发件人域名的DMARC记录，而不是接收方域名
+		hasDMARC, err := checkDMARCRecord(senderDomain)
+		if err != nil {
+			logrus.Warnf("无法检查发件人域名 [%s] 的DMARC记录: %v - UUID: %s", senderDomain, err, s.UUID)
+		} else if hasDMARC {
+			logrus.Infof("发件人域名 [%s] 存在DMARC记录，将应用DMARC签名 - UUID: %s", senderDomain, s.UUID)
+			useDMARC = true
+		} else {
+			logrus.Infof("发件人域名 [%s] 没有DMARC记录 - UUID: %s", senderDomain, s.UUID)
+		}
+	} else {
+		logrus.Debugf("DMARC签名在配置中已禁用 - UUID: %s", s.UUID)
+	}
+
 	smtpServer, err := getSMTPServer(targetDomain)
 	if err != nil {
 		logrus.Errorf("Error retrieving SMTP server for domain [%s]: %v - UUID: %s", targetDomain, err, s.UUID)
@@ -516,6 +557,16 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	}
+	if useDMARC {
+		var err error
+		modifiedEmailData, err = applyDMARCSignature(modifiedEmailData, formattedSender, senderDomain, s.UUID)
+		if err != nil {
+			logrus.Errorf("Failed to apply DMARC signature: %v - UUID: %s", err, s.UUID)
+			// 继续发送邮件，但不使用DMARC签名
+		} else {
+			logrus.Infof("DMARC signature applied successfully - UUID: %s", s.UUID)
+		}
+	}
 
 	// Write the modified email data to the server
 	_, err = w.Write(modifiedEmailData)
@@ -544,7 +595,7 @@ func tryDialSMTPPlain(smtpServer string, port int) (net.Conn, error) {
 		Timeout:   5 * time.Second,  // Connection timeout
 		KeepAlive: 30 * time.Second, // Keep alive interval
 	}
-	address := fmt.Sprintf("%s:%d", smtpServer, port)
+	address := net.JoinHostPort(smtpServer, fmt.Sprintf("%d", port))
 	conn, err := dialer.Dial("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial SMTP server on port %d: %v", port, err)
@@ -629,4 +680,148 @@ func shouldForwardEmail(recipients []string) bool {
 		}
 	}
 	return false // No matching domains, no forwarding
+}
+
+func applyDMARCSignature(emailData []byte, sender, domain, uuid string) ([]byte, error) {
+	logrus.Infof("开始应用DMARC签名 - 发件人: [%s], 域名: [%s], UUID: %s", sender, domain, uuid)
+	// 检查是否有DKIM私钥配置
+	if CONFIG.SMTP.DKIMPrivateKey == "" {
+		logrus.Errorf("DKIM私钥未配置，无法应用DMARC签名 - UUID: %s", uuid)
+		return nil, fmt.Errorf("DKIM private key not configured")
+	}
+	// 检查DKIM选择器是否配置
+	if CONFIG.SMTP.DKIMSelector == "" {
+		logrus.Errorf("DKIM选择器未配置，无法应用DMARC签名 - UUID: %s", uuid)
+		return nil, fmt.Errorf("DKIM selector not configured")
+	}
+	// 解析邮件
+	logrus.Debugf("解析邮件内容以应用DMARC签名 - UUID: %s", uuid)
+	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
+	if err != nil {
+		logrus.Errorf("解析邮件失败: %v - UUID: %s", err, uuid)
+		return nil, fmt.Errorf("failed to parse email: %v", err)
+	}
+	// 读取原始邮件头
+	headers := make(map[string]string)
+	for k, v := range msg.Header {
+		headers[k] = strings.Join(v, ", ")
+	}
+	logrus.Debugf("成功读取邮件头，准备添加DKIM签名 - UUID: %s", uuid)
+	// 准备DKIM签名所需的头部
+	// 这里需要使用第三方库来实现DKIM签名
+	logrus.Infof("使用域名 [%s] 和选择器 [%s] 生成DKIM签名 - UUID: %s",
+		domain, CONFIG.SMTP.DKIMSelector, uuid)
+
+	// 生成DKIM签名
+	dkimSignature, err := generateDKIMSignature(emailData, CONFIG.SMTP.DKIMPrivateKey, CONFIG.SMTP.DKIMSelector, domain)
+	if err != nil {
+		logrus.Errorf("生成DKIM签名失败: %v - UUID: %s", err, uuid)
+		return nil, fmt.Errorf("failed to generate DKIM signature: %v", err)
+	}
+	logrus.Debugf("DKIM签名生成成功 - UUID: %s", uuid)
+
+	// 添加DKIM-Signature头
+	headers["DKIM-Signature"] = dkimSignature
+	logrus.Debugf("已添加DKIM-Signature头到邮件 - UUID: %s", uuid)
+
+	// 重建邮件内容
+	var buf bytes.Buffer
+	for k, v := range headers {
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	buf.WriteString("\r\n")
+
+	// 附加原始邮件正文
+	body, err := io.ReadAll(msg.Body)
+	if err != nil {
+		logrus.Errorf("读取邮件正文失败: %v - UUID: %s", err, uuid)
+		return nil, err
+	}
+	buf.Write(body)
+
+	logrus.Infof("DMARC签名应用完成，邮件已重建 - UUID: %s", uuid)
+	return buf.Bytes(), nil
+}
+
+func generateDKIMSignature(emailData []byte, privateKey, selector, domain string) (string, error) {
+	// 记录签名过程开始
+	logrus.Debugf("开始为域名 [%s] 使用选择器 [%s] 生成DKIM签名", domain, selector)
+	if len(privateKey) < 10 {
+		logrus.Warnf("DKIM私钥长度异常短: %d 字符", len(privateKey))
+		return "", fmt.Errorf("DKIM私钥长度异常短")
+	}
+	// 创建邮件数据的副本，因为签名过程会修改原始数据
+	emailCopy := make([]byte, len(emailData))
+	copy(emailCopy, emailData)
+	// 创建一个新的 DKIM 签名选项
+	options := dkim.NewSigOptions()
+	options.PrivateKey = []byte(privateKey)
+	options.Domain = domain
+	options.Selector = selector
+	options.SignatureExpireIn = 3600                                          // 签名有效期1小时
+	options.BodyLength = 0                                                    // 不限制正文长度
+	options.Headers = []string{"from", "to", "subject", "date", "message-id"} // 要签名的头部
+	options.AddSignatureTimestamp = true
+	options.Canonicalization = "relaxed/relaxed" // 使用宽松的规范化方法
+
+	// 直接对邮件数据进行签名
+	// 注意：Sign函数会直接修改传入的邮件数据，添加DKIM-Signature头
+	err := dkim.Sign(&emailCopy, options)
+	if err != nil {
+		logrus.Errorf("生成DKIM签名失败: %v", err)
+		return "", fmt.Errorf("failed to generate DKIM signature: %v", err)
+	}
+	// 从签名后的邮件中提取DKIM-Signature头
+	msg, err := mail.ReadMessage(bytes.NewReader(emailCopy))
+	if err != nil {
+		logrus.Errorf("解析签名后的邮件失败: %v", err)
+		return "", fmt.Errorf("failed to parse signed email: %v", err)
+	}
+	dkimSignature := msg.Header.Get("DKIM-Signature")
+	if dkimSignature == "" {
+		logrus.Errorf("无法从签名后的邮件中获取DKIM-Signature头")
+		return "", fmt.Errorf("DKIM-Signature header not found in signed email")
+	}
+	// 记录签名成功
+	if len(dkimSignature) > 30 {
+		logrus.Debugf("DKIM签名生成成功: %s...", dkimSignature[:30])
+	} else {
+		logrus.Debugf("DKIM签名生成成功: %s", dkimSignature)
+	}
+
+	return dkimSignature, nil
+}
+
+// 从私钥中提取公钥信息用于DKIM DNS记录
+func extractPublicKeyInfo(privateKeyPEM string) (string, error) {
+	// 解码PEM块
+	block, _ := pem.Decode([]byte(privateKeyPEM))
+	if block == nil {
+		return "", errors.New("failed to decode PEM block containing private key")
+	}
+	// 解析私钥
+	var privKey *rsa.PrivateKey
+	var err error
+	// 尝试PKCS1格式
+	privKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// 尝试PKCS8格式
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return "", errors.New("failed to parse private key: not PKCS1 or PKCS8 format")
+		}
+		var ok bool
+		privKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return "", errors.New("private key is not RSA type")
+		}
+	}
+	// 序列化公钥
+	pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		return "", errors.New("failed to marshal public key")
+	}
+	// Base64编码
+	pubKeyBase64 := base64.StdEncoding.EncodeToString(pubKeyBytes)
+	return pubKeyBase64, nil
 }

@@ -30,6 +30,40 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("Error loading config: %v", err)
 	}
+
+	// 输出DMARC配置信息
+	if CONFIG.SMTP.EnableDMARC {
+		// 检查私钥有效性
+		if _, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey); err != nil {
+			logrus.Errorf("DKIM私钥无效: %v", err)
+			logrus.Info("请使用以下命令生成新的DKIM私钥:")
+			logrus.Info("openssl genrsa -out dkim_private.pem 2048")
+			//logrus.Info("openssl rsa -in dkim_private.pem -pubout -out dkim_public.pem")
+			logrus.Info("然后将生成的私钥内容配置到config.yml的DKIMPrivateKey字段中")
+			return
+		}
+		logrus.Infof("DMARC 已启用，使用选择器: %s", CONFIG.SMTP.DKIMSelector)
+		// 获取要处理的域名列表
+		domains := CONFIG.SMTP.AllowedDomains
+		// 为每个域名生成DMARC和DKIM记录
+		for _, domain := range domains {
+			dmarcRecord := fmt.Sprintf("v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s; ruf=mailto:dmarc@%s; fo=1; adkim=r; aspf=r;",
+				domain, domain)
+			publicKey, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
+			if err != nil {
+				logrus.Errorf("提取DKIM公钥失败: %v", err)
+				continue
+			}
+			dkimRecord := fmt.Sprintf("v=DKIM1; k=rsa; p=%s", publicKey)
+			logrus.Infof("域名: %s", domain)
+			logrus.Infof("推荐的DMARC DNS记录 (_dmarc.%s TXT): %s", domain, dmarcRecord)
+			logrus.Infof("推荐的DKIM DNS记录 (%s._domainkey.%s TXT): %s",
+				CONFIG.SMTP.DKIMSelector, domain, dkimRecord)
+		}
+	} else {
+		logrus.Infof("DMARC 未启用")
+	}
+
 	logrus.Infof("Telegram Chat ID: %s", CONFIG.Telegram.ChatID)
 	//spf.DNSServer = "1.1.1.1:53"
 

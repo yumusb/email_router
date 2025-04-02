@@ -21,6 +21,9 @@ type SMTPConfig struct {
 	PrivateEmail     string   `yaml:"private_email"`
 	CertFile         string   `yaml:"cert_file"`
 	KeyFile          string   `yaml:"key_file"`
+	EnableDMARC      bool     `yaml:"enable_dmarc"`
+	DKIMPrivateKey   string   `yaml:"dkim_private_key"`
+	DKIMSelector     string   `yaml:"dkim_selector"`
 }
 
 type TelegramConfig struct {

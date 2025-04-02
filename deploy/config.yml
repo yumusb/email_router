@@ -11,7 +11,13 @@ smtp:
   cert_file: "/cert/fullchain.pem"     # TLS证书路径
   key_file: "/cert/key.pem"            # TLS私钥路径
   private_email: "root@local"          # 私有邮箱地址
-
+  enable_dmarc: False                   # 是否启用DMARC
+  dkim_private_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCcO5W2T1MIne5v
+    .......
+    -----END PRIVATE KEY-----
+  dkim_selector: "dkim" # DKIM选择器
 webhook:
   enabled: False                        # 是否启用Webhook功能
   method: "POST"                       # HTTP方法，例如POST或GET
