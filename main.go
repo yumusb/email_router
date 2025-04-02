@@ -30,7 +30,6 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("Error loading config: %v", err)
 	}
-
 	// 输出DMARC配置信息
 	if CONFIG.SMTP.EnableDMARC {
 		// 检查私钥有效性
@@ -43,26 +42,36 @@ func main() {
 			return
 		}
 		logrus.Infof("DMARC 已启用，使用选择器: %s", CONFIG.SMTP.DKIMSelector)
-		// 获取要处理的域名列表
-		domains := CONFIG.SMTP.AllowedDomains
-		// 为每个域名生成DMARC和DKIM记录
-		for _, domain := range domains {
-			dmarcRecord := fmt.Sprintf("v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s; ruf=mailto:dmarc@%s; fo=1; adkim=r; aspf=r;",
-				domain, domain)
-			publicKey, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
-			if err != nil {
-				logrus.Errorf("提取DKIM公钥失败: %v", err)
-				continue
-			}
-			dkimRecord := fmt.Sprintf("v=DKIM1; k=rsa; p=%s", publicKey)
-			logrus.Infof("域名: %s", domain)
-			logrus.Infof("推荐的DMARC DNS记录 (_dmarc.%s TXT): %s", domain, dmarcRecord)
-			logrus.Infof("推荐的DKIM DNS记录 (%s._domainkey.%s TXT): %s",
-				CONFIG.SMTP.DKIMSelector, domain, dkimRecord)
-		}
 	} else {
 		logrus.Infof("DMARC 未启用")
 	}
+	// 推荐的DNS记录
+	for _, domain := range CONFIG.SMTP.AllowedDomains {
+		logrus.Infof("\n域名: %s", domain)
+		logrus.Infof(";; A Records")
+		logrus.Infof("mx.%s.\t1\tIN\tA\t%s", domain, "ip地址")
+		logrus.Infof("\n;; MX Records")
+		logrus.Infof("%s.\t1\tIN\tMX\t5 mx.%s.", domain, domain)
+		logrus.Infof("\n;; TXT Records")
+		logrus.Infof("%s.\t1\tIN\tTXT\t\"v=spf1 mx:%s -all\"", domain, domain)
+		if CONFIG.SMTP.EnableDMARC {
+			logrus.Infof("_dmarc.%s.\t1\tIN\tTXT\t\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s; ruf=mailto:dmarc@%s; fo=1; adkim=r; aspf=r;\"",
+				domain, domain, domain)
+			logrus.Infof("%s._domainkey.%s.\t1\tIN\tTXT\t\"v=DKIM1; k=rsa; p=%s\"",
+				CONFIG.SMTP.DKIMSelector, domain, func() string {
+					pubKey, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
+					if err != nil {
+						logrus.Errorf("获取公钥信息失败: %v", err)
+						return ""
+					}
+					return pubKey
+				}())
+		}
+	}
+
+	logrus.Infof("SMTP 监听地址: %s", CONFIG.SMTP.ListenAddress)
+	logrus.Infof("SMTP TLS 监听地址: %s", CONFIG.SMTP.ListenAddressTls)
+	logrus.Infof("SMTP 允许的域名: %v", CONFIG.SMTP.AllowedDomains)
 
 	logrus.Infof("Telegram Chat ID: %s", CONFIG.Telegram.ChatID)
 	//spf.DNSServer = "1.1.1.1:53"
