@@ -55,8 +55,8 @@ func main() {
 		logrus.Infof("\n;; TXT Records")
 		logrus.Infof("%s.\t1\tIN\tTXT\t\"v=spf1 mx:%s -all\"", domain, domain)
 		if CONFIG.SMTP.EnableDMARC {
-			logrus.Infof("_dmarc.%s.\t1\tIN\tTXT\t\"v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s; ruf=mailto:dmarc@%s; fo=1; adkim=r; aspf=r;\"",
-				domain, domain, domain)
+			logrus.Infof("_dmarc.%s.\t1\tIN\tTXT\t\"v=DMARC1; p=reject; sp=none; ruf=mailto:dmarc@%s; fo=1;\"",
+				domain, domain)
 			logrus.Infof("%s._domainkey.%s.\t1\tIN\tTXT\t\"v=DKIM1; k=rsa; p=%s\"",
 				CONFIG.SMTP.DKIMSelector, domain, func() string {
 					pubKey, pkErr := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
