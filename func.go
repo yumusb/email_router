@@ -543,7 +543,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 	//modifiedEmailData, _ = []byte(removeEmailHeaders()[])
 	modifiedEmailData, _ = removeEmailHeaders(emailData, []string{"DKIM-*", "Authentication-*"})
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
-		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
+		modifiedEmailData, _ = modifyEmailHeaders(modifiedEmailData, formattedSender, "")
 		headersToAdd := map[string]string{
 			"Original-From":       s.from,
 			"Original-To":         strings.Join(s.to, ","),
@@ -555,7 +555,7 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
-		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
+		modifiedEmailData, _ = modifyEmailHeaders(modifiedEmailData, formattedSender, targetAddress)
 		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData, headersToRemove)
 		headersToAdd := map[string]string{
 			"Message-Id": fmt.Sprintf("<%s@%s>", s.UUID, senderDomain),
