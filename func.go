@@ -61,26 +61,28 @@ func extractEmails(str string) string {
 	}
 	return address.Address
 }
-func removeEmailHeaders(emailData []byte) ([]byte, error) {
+func removeEmailHeaders(emailData []byte, headersToRemove []string) ([]byte, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(emailData))
 	if err != nil {
 		return nil, err
 	}
-	// Read the original email headers
+
+	// 读取原始邮件头
 	headers := make(map[string]string)
 	for k, v := range msg.Header {
-		headers[strings.ToLower(k)] = strings.Join(v, ", ") // Store headers in lowercase
+		headers[strings.ToLower(k)] = strings.Join(v, ", ") // 统一存储为小写
 	}
-	// Create regex patterns from the headersToRemove
+
+	// 创建正则表达式模式
 	patterns := make([]*regexp.Regexp, len(headersToRemove))
 	for i, header := range headersToRemove {
-		// Convert wildcard '*' to regex pattern
 		regexPattern := "^" + regexp.QuoteMeta(strings.ToLower(header)) + "$"
-		regexPattern = strings.ReplaceAll(regexPattern, "\\*.", ".*") // Match anything after the wildcard
-		regexPattern = strings.ReplaceAll(regexPattern, "\\*", ".*")  // Match anything with wildcard
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*.", ".*") // 处理 *. 形式
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*", ".*")  // 处理 * 形式
 		patterns[i] = regexp.MustCompile(regexPattern)
 	}
-	// Remove specified headers
+
+	// 移除匹配的 headers
 	for k := range headers {
 		for _, pattern := range patterns {
 			if pattern.MatchString(k) {
@@ -90,19 +92,20 @@ func removeEmailHeaders(emailData []byte) ([]byte, error) {
 		}
 	}
 
-	// Build the new email content without the removed headers
-	var buf bytes.Buffer
-	for k, v := range headers {
-		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
-	}
-	buf.WriteString("\r\n")
-
-	// Append the original email body
+	// 读取邮件正文
 	body, err := io.ReadAll(msg.Body)
 	if err != nil {
 		return nil, err
 	}
-	buf.Write(body)
+
+	// 重新构造邮件内容
+	var buf bytes.Buffer
+	for k, v := range headers {
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	buf.WriteString("\r\n") // 头部结束
+
+	buf.Write(body) // 追加原始正文
 
 	return buf.Bytes(), nil
 }
@@ -502,8 +505,8 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 			}
 			defer conn.Close()
 			client = smtp.NewClientWithLocalName(conn, getDomainFromEmail(formattedSender))
-			if err := client.Mail(formattedSender, &smtp.MailOptions{}); err != nil {
-				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v - UUID: %s", err, s.UUID)
+			if mailErr := client.Mail(formattedSender, &smtp.MailOptions{}); mailErr != nil {
+				logrus.Errorf("Error setting MAIL FROM on plain SMTP: %v - UUID: %s", mailErr, s.UUID)
 				return
 			}
 		} else {
@@ -537,6 +540,8 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 
 	// Modify email data
 	var modifiedEmailData []byte
+	//modifiedEmailData, _ = []byte(removeEmailHeaders()[])
+	modifiedEmailData, _ = removeEmailHeaders(emailData, []string{"DKIM-*", "Authentication-*"})
 	if strings.EqualFold(targetAddress, CONFIG.SMTP.PrivateEmail) {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, "")
 		headersToAdd := map[string]string{
@@ -551,17 +556,17 @@ func forwardEmailToTargetAddress(emailData []byte, formattedSender string, targe
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	} else {
 		modifiedEmailData, _ = modifyEmailHeaders(emailData, formattedSender, targetAddress)
-		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData)
+		modifiedEmailData, _ = removeEmailHeaders(modifiedEmailData, headersToRemove)
 		headersToAdd := map[string]string{
 			"Message-Id": fmt.Sprintf("<%s@%s>", s.UUID, senderDomain),
 		}
 		modifiedEmailData, _ = addEmailHeaders(modifiedEmailData, headersToAdd)
 	}
 	if useDMARC {
-		var err error
-		modifiedEmailData, err = applyDMARCSignature(modifiedEmailData, formattedSender, senderDomain, s.UUID)
-		if err != nil {
-			logrus.Errorf("Failed to apply DMARC signature: %v - UUID: %s", err, s.UUID)
+		var dkimErr error
+		modifiedEmailData, dkimErr = applyDMARCSignature(modifiedEmailData, formattedSender, senderDomain, s.UUID)
+		if dkimErr != nil {
+			logrus.Errorf("Failed to apply DMARC signature: %v - UUID: %s", dkimErr, s.UUID)
 			// 继续发送邮件，但不使用DMARC签名
 		} else {
 			logrus.Infof("DMARC signature applied successfully - UUID: %s", s.UUID)
@@ -806,8 +811,9 @@ func extractPublicKeyInfo(privateKeyPEM string) (string, error) {
 	privKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		// 尝试PKCS8格式
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
+		key, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if parseErr != nil {
+			//logrus.Errorf("Failed to parse private key: %v", parseErr)
 			return "", errors.New("failed to parse private key: not PKCS1 or PKCS8 format")
 		}
 		var ok bool

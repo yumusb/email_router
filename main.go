@@ -33,8 +33,8 @@ func main() {
 	// 输出DMARC配置信息
 	if CONFIG.SMTP.EnableDMARC {
 		// 检查私钥有效性
-		if _, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey); err != nil {
-			logrus.Errorf("DKIM私钥无效: %v", err)
+		if _, pkErr := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey); pkErr != nil {
+			logrus.Errorf("DKIM私钥无效: %v", pkErr)
 			logrus.Info("请使用以下命令生成新的DKIM私钥:")
 			logrus.Info("openssl genrsa -out dkim_private.pem 2048")
 			//logrus.Info("openssl rsa -in dkim_private.pem -pubout -out dkim_public.pem")
@@ -59,9 +59,9 @@ func main() {
 				domain, domain, domain)
 			logrus.Infof("%s._domainkey.%s.\t1\tIN\tTXT\t\"v=DKIM1; k=rsa; p=%s\"",
 				CONFIG.SMTP.DKIMSelector, domain, func() string {
-					pubKey, err := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
+					pubKey, pkErr := extractPublicKeyInfo(CONFIG.SMTP.DKIMPrivateKey)
 					if err != nil {
-						logrus.Errorf("获取公钥信息失败: %v", err)
+						logrus.Errorf("获取公钥信息失败: %v", pkErr)
 						return ""
 					}
 					return pubKey
